@@ -1,0 +1,14 @@
+tests
+/datasets
+
+*.egg-info
+__pycache__
+
+
+*.nsys-rep
+*.qdstrm
+
+prompt
+
+/*.sh
+/*.png
