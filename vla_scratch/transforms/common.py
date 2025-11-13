@@ -1,0 +1,58 @@
+from typing import Any, Dict
+
+import numpy as np
+import torch
+
+from vla_scratch.transforms.data_keys import (
+    PROCESSED_ACTION_KEY,
+    PROCESSED_IMAGE_KEY,
+    PROCESSED_IMAGE_MASK_KEY,
+    PROCESSED_STATE_KEY,
+    TOKENIZED_KEY,
+    TOKENIZED_MASK_KEY,
+)
+from vla_scratch.transforms.data_types import ActionChunk, Observation, DataSample
+from vla_scratch.transforms.base import TransformFn
+
+
+class ToDataSample(TransformFn):
+    def compute(self, sample: Dict[str, torch.Tensor]) -> DataSample:  # type: ignore[override]
+        observation = Observation(
+            images=sample[PROCESSED_IMAGE_KEY],
+            image_masks=sample[PROCESSED_IMAGE_MASK_KEY],
+            state=sample[PROCESSED_STATE_KEY],
+            tokenized_prompt=sample[TOKENIZED_KEY],
+            tokenized_prompt_mask=sample[TOKENIZED_MASK_KEY],
+        )
+        action = ActionChunk(actions=sample[PROCESSED_ACTION_KEY])
+        return DataSample(observation=observation, action_chunk=action)
+
+
+class ToObservation(TransformFn):
+    def compute(self, sample: Dict[str, Any]) -> Observation:  # type: ignore[override]
+        return Observation(
+            images=sample[PROCESSED_IMAGE_KEY],
+            image_masks=sample[PROCESSED_IMAGE_MASK_KEY],
+            state=sample[PROCESSED_STATE_KEY],
+            tokenized_prompt=sample[TOKENIZED_KEY],
+            tokenized_prompt_mask=sample[TOKENIZED_MASK_KEY],
+        )
+
+
+class ToTorch(TransformFn):
+    def compute(self, sample: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+        return {
+            key: torch.from_numpy(val).to(torch.float32) if isinstance(val, np.ndarray) else val
+            for key, val in sample.items()
+        }
+
+
+class ToNumpy(TransformFn):
+    def compute(self, sample: Dict[str, Any]) -> Dict[str, Any]:
+        out = {}
+        for key, value in sample.items():
+            if isinstance(value, torch.Tensor):
+                out[key] = value.cpu().numpy()
+            else:
+                out[key] = value
+        return out

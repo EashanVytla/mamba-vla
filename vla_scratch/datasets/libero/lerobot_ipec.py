@@ -1,15 +1,14 @@
 # this file hosts the LeRobotDataset class for loading libero dataset from IPEC-COMMUNITY
-
-from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata, LeRobotDataset
-from pathlib import Path
+import torch
 import numpy as np
-from torch.utils.data import Dataset
+from lerobot.datasets.lerobot_dataset import LeRobotDatasetMetadata, LeRobotDataset
+
 from vla_scratch.datasets.libero.common import *
-from vla_scratch.datasets.common import TASK_KEY
+from vla_scratch.transforms.data_keys import TASK_KEY
 from vla_scratch.datasets.libero.config import LiberoIPECConfig
 
 
-class IPECDataset(Dataset):
+class IPECDataset(torch.utils.data.Dataset):
     # norm_stats_path = "normalization_stats/libero_proprio_stats.npz"
     def __init__(
         self,
@@ -91,7 +90,7 @@ def test_episode():
 
 
 def test_visualize(integrate_mode="close_loop"):
-    from vla_scratch.datasets.math_utils import (
+    from vla_scratch.utils.math import (
         quat_apply,
         quat_from_euler_xyz,
         quat_from_angle_axis,

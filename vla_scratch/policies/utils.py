@@ -1,7 +1,4 @@
 import torch
-from typing import Iterable
-import torch.distributed as dist
-from torch.distributed.distributed_c10d import ProcessGroup
 import jaxtyping as at
 
 

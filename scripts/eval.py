@@ -1,78 +1,55 @@
 #!/usr/bin/env python3
-from __future__ import annotations
+
 
 """
-Simple evaluation script: load Moz dataset + Pi policy, run sampling inference,
-and compute MSE loss between predicted actions and dataset target actions.
+Evaluate a policy on a dataset using Hydra configs (mirrors train_policy grammar).
 
-References:
-- Dataset/policy loading adapted from scripts/vis/pub_policy_eval_server.py
-- MSE evaluation mirrors train_policy.compute_sample_mse
+- Expects data and policy groups (e.g., data=moz, policy=pi)
+- Optionally loads a checkpoint and computes MSE over a subset
 """
 
-import argparse
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Any, List, Optional, cast
+import os
+from tqdm import tqdm
 
-import numpy as np
+import hydra
+from hydra.core.config_store import ConfigStore
+from omegaconf import DictConfig, OmegaConf, MISSING
+
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Subset
 
-from vla_scratch.datasets.spirit.config import MozConfig
-from vla_scratch.datasets.config import create_dataset, _instantiate_transform
-from vla_scratch.policies.pi.config import PiConfig
-from vla_scratch.policies.config import create_policy
+from vla_scratch.datasets.config import DataConfig
+from vla_scratch.helpers import create_dataset
+from vla_scratch.policies.config import create_policy, PolicyConfig
+from vla_scratch.transforms.data_types import DataSample
+from vla_scratch.utils.checkpoint import find_latest_checkpoint, load_model_from_checkpoint
 
-from vla_scratch.datasets.data_types import DataSample
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-
-def build_argparser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Evaluate policy MSE on Moz dataset")
-    # Dataset args
-    p.add_argument("--repo-id", type=str, default="20251013_sdandardpp4of12_pickplace_ori")
-    p.add_argument(
-        "--root",
-        type=Path,
-        default=Path("datasets"),
-        help="Root directory containing dataset repo folder",
+@dataclass
+class EvalConfig:
+    defaults: list[Any] = field(
+        default_factory=lambda: ["_self_", {"policy": "pi"}, {"data": "moz"}]
     )
-    p.add_argument("--episodes", type=str, default=None, help="Comma/range list, e.g., 0,1,2 or 0-3 (optional)")
+    # Hydra configs
+    data: DataConfig = MISSING
+    policy: PolicyConfig = MISSING
+
     # Eval controls
-    p.add_argument("--batch-size", type=int, default=16)
-    p.add_argument("--num-workers", type=int, default=4)
-    p.add_argument("--num-samples", type=int, default=512, help="Number of samples to evaluate (max)")
-    p.add_argument("--num-steps", type=int, default=10, help="Sampling steps for model.sample_actions")
-    # Policy
-    p.add_argument("--checkpoint", type=Path, default=None)
-    p.add_argument("--device", type=str, default="cuda")
-    return p
+    batch_size: int = 32
+    num_workers: int = 16
+    num_samples: int = 512
+    num_steps: int = 10
+    # Runtime
+    checkpoint_path: Optional[str] = None
+    device: str = "cuda"
 
 
-def _parse_episodes(spec: Optional[str]) -> Optional[List[int]]:
-    if spec is None or spec.strip() == "":
-        return None
-    parts = [s.strip() for s in spec.split(",") if s.strip()]
-    out: List[int] = []
-    for part in parts:
-        if "-" in part:
-            a, b = part.split("-", 1)
-            out.extend(list(range(int(a), int(b) + 1)))
-        else:
-            out.append(int(part))
-    return out
-
-
-def _find_latest_checkpoint(path: Path) -> Optional[Path]:
-    path = Path(path)
-    if path.is_file():
-        return path
-    if not path.exists():
-        return None
-    candidates = sorted(path.glob("checkpoint_*.pth"))
-    if not candidates:
-        return None
-    return candidates[-1]
+cs = ConfigStore.instance()
+cs.store(name="eval", node=EvalConfig())
 
 
 @torch.inference_mode()
@@ -84,7 +61,6 @@ def compute_mse(
 ) -> float:
     errs: List[torch.Tensor] = []
     it = iter(dataloader)
-    from tqdm import tqdm
     for _ in tqdm(range(len(dataloader))):
         batch, _ = next(it)
         batch: DataSample = batch.to(device)
@@ -95,32 +71,25 @@ def compute_mse(
     return float(torch.stack(errs).mean().item())
 
 
-def main() -> None:
-    args = build_argparser().parse_args()
+@hydra.main(config_name="eval", version_base=None)
+def main(cfg: DictConfig) -> None:
+    OmegaConf.resolve(cfg)
+    OmegaConf.set_struct(cfg, False)
+
+    eval_cfg = cast(EvalConfig, OmegaConf.to_object(cfg))
 
     # Data + policy configs
-    data_cfg = MozConfig()
-    data_cfg.repo_id = args.repo_id
-    data_cfg.root_path = args.root
-    data_cfg.episodes = list(range(2))
-    # _parse_episodes(args.episodes)
+    data_cfg: DataConfig = eval_cfg.data
+    policy_cfg: PolicyConfig = eval_cfg.policy
 
-    policy_cfg = PiConfig()
-
-    policy_cfg.action_horizon = 30
-    policy_cfg.state_history = 1
-    policy_cfg.num_obs_registers = 4
-    policy_cfg.expert_only_use_register = True
-
-    # Keep temporal params in sync
     data_cfg.action_horizon = policy_cfg.action_horizon
     data_cfg.state_history = policy_cfg.state_history
 
-    # Disable image augmentation for eval
-    for i, spec in enumerate(list(data_cfg.transforms)):
+    # Disable image augmentation for eval if SpiritImages present
+    for i, spec in enumerate(list(data_cfg.input_transforms or [])):
         if isinstance(spec, dict) and spec.get("_target_") == "vla_scratch.datasets.spirit.transforms.SpiritImages":
             spec.update({"enable_aug": False, "aug_p": 0.0})
-            data_cfg.transforms[i] = spec
+            data_cfg.input_transforms[i] = spec
 
     # Create transformed dataset (includes normalization + policy transforms + ToTensorClass)
     dataset = create_dataset(data_cfg, policy_cfg)
@@ -131,18 +100,15 @@ def main() -> None:
     policy_cfg.action_dim = int(sample0.action_chunk.actions.shape[-1])
 
     # Model
-    device = torch.device(args.device if args.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu"))
+    device = torch.device(eval_cfg.device if eval_cfg.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu"))
     with torch.device(device):
         model = create_policy(policy_cfg)
-    if args.checkpoint is not None:
-        ckpt = _find_latest_checkpoint(Path(args.checkpoint))
+    if eval_cfg.checkpoint_path is not None:
+        ckpt = find_latest_checkpoint(eval_cfg.checkpoint_path)
         if ckpt is None:
-            raise FileNotFoundError(f"No checkpoint found under {args.checkpoint}")
-        state_dict = torch.load(ckpt, map_location=device)
+            raise FileNotFoundError(f"No checkpoint found under {eval_cfg.checkpoint_path}")
         print(f"[eval] loading model checkpoint from {ckpt}")
-        model_state_dict = state_dict.get("model", state_dict)
-        # print missing/unexpected keys
-        missing, unexpected = model.load_state_dict(model_state_dict, strict=False)
+        missing, unexpected = load_model_from_checkpoint(model, ckpt, device="cpu", strict=False)
         if missing:
             print(f"[eval] warning: missing keys in model state_dict: {missing}")
         if unexpected:
@@ -151,23 +117,22 @@ def main() -> None:
 
     # Dataloader — subset for speed
     total = len(dataset)
-    num = min(int(args.num_samples), total)
+    num = min(int(eval_cfg.num_samples), total)
     indices = list(range(num))
     subset = Subset(dataset, indices)
     loader = DataLoader(
         subset,
-        batch_size=int(args.batch_size),
+        batch_size=int(eval_cfg.batch_size),
         shuffle=False,
-        num_workers=int(args.num_workers),
+        num_workers=int(eval_cfg.num_workers),
         pin_memory=torch.cuda.is_available(),
         collate_fn=dataset.collate_fn,
     )
 
     # Evaluate MSE
-    mse = compute_mse(model, loader, device, num_sample_steps=int(args.num_steps))
-    print(f"Eval MSE over {num} samples (batch={args.batch_size}, steps={args.num_steps}): {mse:.6f}")
+    mse = compute_mse(model, loader, device, num_sample_steps=int(eval_cfg.num_steps))
+    print(f"Eval MSE over {num} samples (batch={eval_cfg.batch_size}, steps={eval_cfg.num_steps}): {mse:.6f}")
 
 
 if __name__ == "__main__":
     main()
-

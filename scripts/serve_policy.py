@@ -13,32 +13,27 @@ import hydra
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, MISSING, OmegaConf
 
-from vla_scratch.datasets.common import PROCESSED_ACTION_KEY
-from vla_scratch.datasets.config import (
-    DataConfig,
-    _instantiate_transform,
-    create_dataset,
-    _resolve_config_placeholders,
-)
+from vla_scratch.transforms.data_keys import PROCESSED_ACTION_KEY
+from vla_scratch.datasets.config import DataConfig
 from vla_scratch.policies.config import PolicyConfig, create_policy
 
-from vla_scratch.datasets.data_types import Observation
-from vla_scratch.datasets.transforms import (
-    TransformFn,
-    Normalize,
-    DeNormalize,
-    load_norm_stats,
+from vla_scratch.transforms.data_types import Observation
+from vla_scratch.transforms.base import TransformFn
+from vla_scratch.helpers import (
+    build_input_transforms,
+    build_output_transforms,
+    create_dataset,
 )
-from vla_scratch.datasets.libero.transforms import (
-    LiberoAction,
-    LiberoActionToGlobal,
-    CatHistory,
+from vla_scratch.utils.checkpoint import (
+    find_latest_checkpoint,
+    load_model_from_checkpoint,
 )
+from vla_scratch.datasets.libero.transforms import CatHistory
 from vla_scratch.datasets.libero.common import STATE_KEY
 
 from vla_scratch.serving.zmq_policy_server import ZmqPolicyServer
 from vla_scratch.serving.websocket_policy_server import WebsocketPolicyServer
-from vla_scratch.serving.transforms import ToTorch, ToNumpy, ToObservation
+from vla_scratch.transforms.common import ToTorch, ToNumpy, ToObservation
 
 logger = logging.getLogger(__name__)
 
@@ -142,79 +137,14 @@ class ReplayPolicy:
         self._counter = 0
 
 
-def _find_latest_checkpoint(
-    path: Path, desired_iter: Optional[int] = None
-) -> Optional[Path]:
-    path = Path(path)
-    if path.is_file():
-        return path
-    if not path.exists():
-        return None
-    candidates = sorted(path.glob("checkpoint_*.pth"))
-    if not candidates:
-        return None
-
-    # pick the one with the largest numeric suffix if possible
-    def _epoch_num(p: Path) -> int:
-        stem = p.stem  # checkpoint_X
-        try:
-            epoch = int(stem.split("_")[-1])
-            if desired_iter and epoch == desired_iter:
-                epoch = 9999
-            return epoch
-        except Exception:
-            return -1
-
-    candidates_sorted = sorted(candidates, key=_epoch_num)
-    return candidates_sorted[-1]
+def _build_input_transforms(data_cfg: DataConfig, policy_cfg: PolicyConfig) -> Sequence[TransformFn]:
+    # Preserve initial CatHistory + ToTorch behavior, then use shared helper
+    base = [CatHistory(history=policy_cfg.state_history), ToTorch()]
+    return list(base) + list(build_input_transforms(data_cfg, policy_cfg))
 
 
-def _load_saved_cfgs(
-    run_dir: Path,
-) -> Tuple[Optional[DictConfig], Optional[DictConfig]]:
-    policy_cfg_path = run_dir / "policy-cfg.yaml"
-    data_cfg_path = run_dir / "data-cfg.yaml"
-    policy_cfg = OmegaConf.load(policy_cfg_path) if policy_cfg_path.exists() else None
-    data_cfg = OmegaConf.load(data_cfg_path) if data_cfg_path.exists() else None
-    return policy_cfg, data_cfg
-
-
-def _build_input_transforms(
-    data_cfg: DataConfig, policy_cfg: PolicyConfig
-) -> Sequence[TransformFn]:
-    transforms: list[TransformFn] = []
-    transforms.extend([CatHistory(history=policy_cfg.state_history), ToTorch()])
-
-    # Instantiate dataset transforms, but skip LiberoAction (not available at serve time)
-    dataset_transforms = [_instantiate_transform(spec) for spec in data_cfg.transforms]
-    transforms.extend(
-        [tf for tf in dataset_transforms if not isinstance(tf, LiberoAction)]
-    )
-
-    if data_cfg.norm_stats_path is not None:
-        stats = load_norm_stats(data_cfg, policy_cfg)
-        transforms.append(Normalize(norm_stats=stats))
-
-    # Policy transforms (e.g., StructurePrompt, TokenizePrompt, PreprocessImage)
-    policy_transforms = [_instantiate_transform(spec) for spec in policy_cfg.transforms]
-    transforms.extend(policy_transforms)
-
-    # Finally, convert standardized dict into Observation
-    transforms.append(ToObservation())
-    return transforms
-
-
-def _build_output_transforms(
-    data_cfg: DataConfig, policy_cfg: PolicyConfig
-) -> Sequence[TransformFn]:
-    transforms: list[TransformFn] = []
-
-    if data_cfg.norm_stats_path is not None:
-        stats = load_norm_stats(data_cfg, policy_cfg)
-        transforms.append(DeNormalize(norm_stats=stats))
-
-    transforms.extend([LiberoActionToGlobal(), ToNumpy()])
-    return transforms
+def _build_output_transforms(data_cfg: DataConfig, policy_cfg: PolicyConfig) -> Sequence[TransformFn]:
+    return list(build_output_transforms(data_cfg, policy_cfg))
 
 
 @hydra.main(config_name="serve", version_base=None)
@@ -260,17 +190,14 @@ def main(cfg: DictConfig) -> None:
     print("Model initialized.")
 
     # Load latest checkpoint
-    # serve_cfg.checkpoint_path = None
     if serve_cfg.checkpoint_path is not None:
-        ckpt: Path = _find_latest_checkpoint(Path(serve_cfg.checkpoint_path))
+        ckpt = find_latest_checkpoint(Path(serve_cfg.checkpoint_path))
         if ckpt is None:
             raise FileNotFoundError(
                 f"No checkpoint found under {serve_cfg.checkpoint_path}"
             )
         print(f"Loading checkpoint: {ckpt}")
-        state_dict = torch.load(ckpt, map_location=device)
-        model_state_dict = state_dict["model"]
-        missing, unexpected = model.load_state_dict(model_state_dict, strict=False)
+        missing, unexpected = load_model_from_checkpoint(model, ckpt, device, strict=False)
         print("Checkpoint loaded.")
         if missing:
             logger.warning("Missing keys when loading checkpoint: %s", missing)

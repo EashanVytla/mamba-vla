@@ -122,6 +122,41 @@ def matrix_from_quat(quaternions: torch.Tensor) -> torch.Tensor:
     return o.reshape(quaternions.shape[:-1] + (3, 3))
 
 
+def rotation_matrix_to_6d(rotation: torch.Tensor) -> torch.Tensor:
+    """Project a rotation matrix to the 6D representation (first two rows).
+
+    Args:
+        rotation: tensor of shape (..., 3, 3)
+    Returns:
+        tensor of shape (..., 6)
+    """
+    if rotation.shape[-2:] != (3, 3):
+        raise ValueError(f"Rotation matrix must be (..., 3, 3); received {rotation.shape}")
+    return rotation[..., :2, :].reshape(*rotation.shape[:-2], 6)
+
+
+def rotation_6d_to_matrix(d6: torch.Tensor) -> torch.Tensor:
+    """Convert 6D rotation representation back to a proper rotation matrix.
+
+    Uses Gram-Schmidt orthogonalization on the two 3D row vectors as in
+    https://arxiv.org/abs/1812.07035 (Zhou et al.).
+    Args:
+        d6: tensor of shape (..., 6)
+    Returns:
+        rotation matrices of shape (..., 3, 3)
+    """
+    if d6.shape[-1] != 6:
+        raise ValueError(f"Expected last dim 6 for 6D rotation, got {d6.shape}")
+    a1 = d6[..., 0:3]
+    a2 = d6[..., 3:6]
+    b1 = torch.nn.functional.normalize(a1, dim=-1)
+    a2_proj = (b1 * a2).sum(dim=-1, keepdim=True) * b1
+    b2 = torch.nn.functional.normalize(a2 - a2_proj, dim=-1)
+    b3 = torch.cross(b1, b2, dim=-1)
+    R = torch.stack([b1, b2, b3], dim=-2)
+    return R
+
+
 def convert_quat(quat: torch.Tensor | np.ndarray, to: Literal["xyzw", "wxyz"] = "xyzw") -> torch.Tensor | np.ndarray:
     """Converts quaternion from one convention to another.
 

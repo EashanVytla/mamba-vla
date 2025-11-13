@@ -1,12 +1,11 @@
-from typing import Dict
-
-import importlib
-
 import torch
 import torch.nn.functional as F
+import importlib
+from typing import Dict
 
-from vla_scratch.datasets.transforms import TransformFn
-from vla_scratch.datasets.common import (
+
+from vla_scratch.transforms.base import TransformFn
+from vla_scratch.transforms.data_keys import (
     PROCESSED_IMAGE_KEY,
     PROCESSED_IMAGE_MASK_KEY,
     TASK_KEY,

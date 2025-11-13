@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-from vla_scratch.datasets.data_types import Observation
+from vla_scratch.transforms.data_types import Observation
 from vla_scratch.policies.data_types import *
 from vla_scratch.policies.modules.dit import DiTModel, get_config
 from vla_scratch.policies.pi.utils import (
@@ -97,6 +97,10 @@ class PiPolicy(nn.Module):
             trust_remote_code=True,
             device_map=torch.cuda.current_device(),
         )
+        # from transformers import PaliGemmaConfig
+
+        # hf_config = PaliGemmaConfig.from_pretrained(config.model_id)
+        # self.paligemma = PaliGemmaForConditionalGeneration(hf_config)
         end_time = time.time()
         print(f"PaliGemma model initialized in {end_time - start_time:.2f} seconds.")
 

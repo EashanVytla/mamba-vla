@@ -1,4 +1,5 @@
 import os
+import datetime
 
 import torch
 import torch.distributed as dist
@@ -15,9 +16,12 @@ def setup_dist():
     global local_rank, global_rank, world_size
     try:
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        # Allow overriding default NCCL timeout via env (seconds)
+        timeout_sec = int(os.environ.get("TORCH_DDP_TIMEOUT_SEC", 600))
         dist.init_process_group(
             backend="nccl",
-            device_id=torch.device("cuda", local_rank),
+            init_method="env://",
+            timeout=datetime.timedelta(seconds=timeout_sec),
         )
         global_rank = dist.get_rank()
         world_size = dist.get_world_size()
@@ -35,4 +39,3 @@ def print_with_rank(string):
 #     if global_rank == 0:
 #         breakpoint()
 #     dist.barrier()
-

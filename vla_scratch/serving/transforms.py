@@ -1,51 +1,14 @@
-from typing import Sequence
+from typing import Sequence, Dict
 
 import torch
 import numpy as np
 from pathlib import Path
 
-from vla_scratch.datasets.data_types import Observation
-from vla_scratch.datasets.transforms import *
-from vla_scratch.datasets.common import *
+from vla_scratch.transforms.data_types import Observation
+from vla_scratch.transforms.base import TransformFn
+from vla_scratch.transforms.data_keys import *
 from vla_scratch.datasets.libero.common import *
-
-
-class ToObservation(TransformFn):
-    def compute(self, sample: Dict) -> Dict:
-        observation = Observation(
-            images=sample[PROCESSED_IMAGE_KEY],
-            image_masks=sample[PROCESSED_IMAGE_MASK_KEY],
-            state=sample[PROCESSED_STATE_KEY],
-            tokenized_prompt=sample[TOKENIZED_KEY],
-            tokenized_prompt_mask=sample[TOKENIZED_MASK_KEY],
-        )
-        return observation
-
-
-class ToTorch(TransformFn):
-    """Lightweight transform to convert incoming numpy state to torch tensor."""
-
-    def compute(self, sample: Dict) -> Dict:
-        result = {
-            key: (
-                torch.from_numpy(val).type(torch.float32)
-                if isinstance(val, np.ndarray)
-                else val
-            )
-            for key, val in sample.items()
-        }
-        return result
-
-
-class ToNumpy(TransformFn):
-    def compute(self, sample: Dict) -> Dict:
-        numpy_sample = {}
-        for key, value in sample.items():
-            if isinstance(value, torch.Tensor):
-                numpy_sample[key] = value.cpu().numpy()
-            else:
-                numpy_sample[key] = value
-        return numpy_sample
+from vla_scratch.transforms.common import ToObservation, ToTorch, ToNumpy, ToDataSample
 
 
 class UnNormalize(TransformFn):
@@ -90,7 +53,7 @@ class UnNormalize(TransformFn):
 
 if __name__ == "__main__":
     from vla_scratch.policies.pi.policy import PiPolicy
-    from vla_scratch.datasets.data_types import DataSample
+    from vla_scratch.transforms.data_types import DataSample
 
     observation_in = {
         "observation/image": np.random.randint(
@@ -121,7 +84,7 @@ if __name__ == "__main__":
         StructurePrompt(),
         TokenizePrompt(tokenizer, max_length=128),
         PreprocessImage(),
-        ToTensorClass(),
+        ToDataSample(),
     ]
     observation = observation_in
     for transform in input_transforms:
