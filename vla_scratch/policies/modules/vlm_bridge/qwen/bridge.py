@@ -18,6 +18,7 @@ from vla_scratch.policies.modules.vlm_bridge.qwen.utils import (
     replace_qwen3vl_forward,
 )
 from vla_scratch.policies.utils.transformers import make_att_2d_masks
+from vla_scratch.policies.modules.vlm_bridge.data_types import VLMOutputs
 
 if TYPE_CHECKING:
     from transformers.models.qwen3_vl.modeling_qwen3_vl import Qwen3VLTextModel
@@ -61,19 +62,14 @@ class Qwen3VLBridge(VLMBridge):
         hidden = cfg.hidden_size
         return cfg.num_hidden_layers, head_dim, num_kv_heads, hidden
 
-    def encode_prefix(
+    def encode(
         self,
         *,
         observation: "Observation",
         extra_embs: Optional[torch.Tensor] = None,
         extra_pad_masks: Optional[torch.Tensor] = None,
         extra_att_masks: Optional[torch.Tensor] = None,
-    ) -> Tuple[
-        torch.Tensor,
-        torch.Tensor,
-        List[Tuple[torch.Tensor, torch.Tensor]],
-        List[torch.Tensor],
-    ]:
+    ) -> Tuple[VLMOutputs, Dict]:
         device = observation.device
         bsz = observation.shape[0]
         REPLACED = is_qwen3vl_forward_replaced()
@@ -206,4 +202,18 @@ class Qwen3VLBridge(VLMBridge):
 
         hidden_states = lm.norm(hidden_states)
 
-        return hidden_states, prefix_pad_masks, kv_cache_list, encoder_hidden_states_list
+        vlm_outputs = VLMOutputs(
+            last_hidden_state=hidden_states,
+            prefix_pad_masks=prefix_pad_masks,
+            hidden_state_list=tuple(encoder_hidden_states_list),
+            kv_cache_list=tuple(kv_cache_list),
+        )
+        # mean along seq dim
+        padding_ratio = policy_td.attention_mask.float().mean(dim=-1)
+        log_dict = {
+            "padding_ratio/mean": padding_ratio.mean(),
+            "padding_ratio/std": padding_ratio.std(),
+            "padding_ratio/min": padding_ratio.min(),
+            "padding_ratio/max": padding_ratio.max(),
+        }
+        return vlm_outputs, log_dict

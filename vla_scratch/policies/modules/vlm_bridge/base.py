@@ -5,6 +5,8 @@ from typing import List, Optional, Tuple, TYPE_CHECKING
 import torch
 import torch.nn as nn
 
+from vla_scratch.policies.modules.vlm_bridge.data_types import VLMOutputs
+
 if TYPE_CHECKING:
     from vla_scratch.transforms.data_types import Observation
 
@@ -27,19 +29,14 @@ class VLMBridge(nn.Module):
     def hidden_size(self) -> int:
         raise NotImplementedError
 
-    def encode_prefix(
+    def encode(
         self,
         *,
         observation: "Observation",
         extra_embs: Optional[torch.Tensor] = None,
         extra_pad_masks: Optional[torch.Tensor] = None,
         extra_att_masks: Optional[torch.Tensor] = None,
-    ) -> Tuple[
-        torch.Tensor,
-        torch.Tensor,
-        List[Tuple[torch.Tensor, torch.Tensor]],
-        Optional[List[torch.Tensor]],
-    ]:
+    ) -> VLMOutputs:
         raise NotImplementedError
 
     def apply_fsdp(self, mp_policy, mesh):

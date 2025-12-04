@@ -187,6 +187,18 @@ def save_checkpoint(
     `filename` should be the checkpoint directory name, e.g.,
     `checkpoint_5`. If a file extension is provided, it will be stripped.
     """
+
+    def _cast_float_tensors_to_bfloat16(obj: Any) -> Any:
+        if isinstance(obj, torch.Tensor):
+            return obj.to(dtype=torch.bfloat16) if obj.is_floating_point() else obj
+        if isinstance(obj, dict):
+            return {k: _cast_float_tensors_to_bfloat16(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_cast_float_tensors_to_bfloat16(v) for v in obj]
+        if isinstance(obj, tuple):
+            return tuple(_cast_float_tensors_to_bfloat16(v) for v in obj)
+        return obj
+
     options = StateDictOptions(full_state_dict=True, cpu_offload=True)
     model_state_dict, optim_state_dict = get_state_dict(
         model,
@@ -195,6 +207,8 @@ def save_checkpoint(
     )
 
     if global_rank == 0:
+        model_state_dict = _cast_float_tensors_to_bfloat16(model_state_dict)
+        optim_state_dict = _cast_float_tensors_to_bfloat16(optim_state_dict)
         base = Path(filename)
         # Strip extension if provided (for backward compatibility)
         if base.suffix:
@@ -205,4 +219,3 @@ def save_checkpoint(
         torch.save(model_state_dict, model_file)
         torch.save(optim_state_dict, optim_file)
         print(f"Saved checkpoint to {base} (model.pt, optimizer.pt)")
-

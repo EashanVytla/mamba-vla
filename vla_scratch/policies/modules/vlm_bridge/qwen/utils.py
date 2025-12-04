@@ -6,9 +6,11 @@ import einops
 
 from transformers.models.qwen3_vl.modeling_qwen3_vl import (
     Qwen3VLTextDecoderLayer,
+    Qwen3VLTextRotaryEmbedding,
     Qwen3VLVisionModel,
     Qwen3VLVisionAttention,
     apply_rotary_pos_emb_vision,
+    dynamic_rope_update,
 )
 
 from vla_scratch.policies.utils.transformers import apply_rotary_pos_emb
@@ -143,17 +145,17 @@ def _qwen3_vision_attn_fast_forward(
     torch.cuda.nvtx.range_push("qkv_projection")
     qkv = einops.rearrange(
         self.qkv(hidden_states),
-        "b_seq (three head dim) -> three b_seq head dim",
+        "b_seq (three head dim) -> b_seq three head dim",
         three=3,
         head=self.num_heads,
     )
-    query_states, key_states, value_states = qkv.unbind(0)
-    cos, sin = position_embeddings
+    # qkv = self.qkv(hidden_states).view(-1, 3, self.num_heads, self.head_dim)
+    query_states, key_states, value_states = qkv.unbind(1)
 
+    cos, sin = position_embeddings
     query_states, key_states = apply_rotary_pos_emb_vision(
         query_states, key_states, cos, sin
     )
-
     torch.cuda.nvtx.range_pop()
 
     torch.cuda.nvtx.range_push("attn")
@@ -213,14 +215,16 @@ def _qwen3_vision_model_fast_forward(
     seq_len, _ = hidden_states.size()
     hidden_states = hidden_states.reshape(seq_len, -1)
     rotary_pos_emb = _qwen3vl_fast_rot_pos_emb(self, grid_thw_list)
-    rotary_pos_emb = rotary_pos_emb.reshape(seq_len, -1)
+    rotary_pos_emb = rotary_pos_emb.reshape(seq_len, -1).type(torch.float32)
     emb = torch.cat((rotary_pos_emb, rotary_pos_emb), dim=-1)
     position_embeddings = (emb.cos(), emb.sin())
+    position_embeddings = tuple(pe.type(hidden_states.dtype) for pe in position_embeddings)
     torch.cuda.nvtx.range_pop()
 
     deepstack_feature_lists = []
     for layer_num, blk in enumerate(self.blocks):
         torch.cuda.nvtx.range_push(f"vision_block_{layer_num}")
+        # hidden_states = blk(hidden_states, cu_seqlens=grid_thw_list, position_embeddings=position_embeddings)
         hidden_states = apply_checkpoint_when_training(
             self,
             blk,
@@ -245,6 +249,29 @@ def _qwen3_vision_model_fast_forward(
     torch.cuda.nvtx.range_pop()
 
     return hidden_states, deepstack_feature_lists
+
+
+@torch.no_grad()
+@dynamic_rope_update
+def _qwen_text_rotary_forward_fp32(self: "Qwen3VLTextRotaryEmbedding", x, position_ids):
+    """Compute text rotary embeddings in fp32 then cast to input dtype."""
+    if position_ids.ndim == 2:
+        position_ids = position_ids[None, ...].expand(3, position_ids.shape[0], -1)
+    inv_freq_expanded = (
+        self.inv_freq[None, None, :, None]
+        .to(dtype=torch.float32)
+        .expand(3, position_ids.shape[1], -1, 1)
+    )
+    position_ids_expanded = position_ids[:, :, None, :].to(dtype=torch.float32)
+
+    device_type = "cpu" if x.device.type == "mps" else x.device.type
+    with torch.autocast(device_type=device_type, enabled=False):
+        freqs = (inv_freq_expanded @ position_ids_expanded).transpose(2, 3)
+        freqs = self.apply_interleaved_mrope(freqs, self.mrope_section)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        cos = emb.cos() * self.attention_scaling
+        sin = emb.sin() * self.attention_scaling
+    return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
 def _qwen_text_decoder_layer_custom_forward(
@@ -312,6 +339,7 @@ def _qwen_text_decoder_layer_custom_forward(
 orig_vision_forward = Qwen3VLVisionModel.forward
 orig_attn_forward = Qwen3VLVisionAttention.forward
 orig_layer_forward = Qwen3VLTextDecoderLayer.forward
+orig_rotary_forward = Qwen3VLTextRotaryEmbedding.forward
 
 
 REPLACED = False
@@ -323,6 +351,7 @@ def replace_qwen3vl_forward():
         Qwen3VLTextDecoderLayer.forward = _qwen_text_decoder_layer_custom_forward
         Qwen3VLVisionModel.forward = _qwen3_vision_model_fast_forward
         Qwen3VLVisionAttention.forward = _qwen3_vision_attn_fast_forward
+        Qwen3VLTextRotaryEmbedding.forward = _qwen_text_rotary_forward_fp32
         REPLACED = True
 
 
@@ -332,6 +361,7 @@ def restore_qwen3vl_forward():
         Qwen3VLTextDecoderLayer.forward = orig_layer_forward
         Qwen3VLVisionModel.forward = orig_vision_forward
         Qwen3VLVisionAttention.forward = orig_attn_forward
+        Qwen3VLTextRotaryEmbedding.forward = orig_rotary_forward
         REPLACED = False
 
 

@@ -2542,7 +2542,7 @@ requires-dist = [
     { name = "torchcodec" },
     { name = "torchvision", specifier = "==0.22.0" },
     { name = "tqdm" },
-    { name = "transformers" },
+    { name = "transformers", specifier = "==4.57.1" },
     { name = "viser" },
     { name = "wandb" },
 ]

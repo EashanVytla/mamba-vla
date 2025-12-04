@@ -58,6 +58,7 @@ class MLP(nn.Module):
 
 
 class RotaryEmbedding(nn.Module):
+    inv_freq: torch.Tensor
     def __init__(
         self, head_dim: int, max_position_embeddings: int, base: float
     ) -> None:
@@ -74,11 +75,16 @@ class RotaryEmbedding(nn.Module):
                 f"Expected position_ids to have shape (batch, seq), got {position_ids.shape}"
             )
         freqs = torch.einsum(
-            "bi,j->bij", position_ids.float(), self.inv_freq.to(position_ids.device)
+            "bi,j->bij",
+            position_ids.float(),
+            self.inv_freq.to(position_ids.device, dtype=torch.float32),
         )
-        emb = torch.cat((freqs, freqs), dim=-1)
-        cos = emb.cos().to(dtype=dtype)
-        sin = emb.sin().to(dtype=dtype)
+        emb = torch.cat((freqs, freqs), dim=-1).to(dtype=torch.float32)
+        cos = emb.cos()
+        sin = emb.sin()
+        if cos.dtype != dtype:
+            cos = cos.to(dtype=dtype)
+            sin = sin.to(dtype=dtype)
         return cos, sin
 
 
@@ -279,8 +285,6 @@ class DiTModel(nn.Module):
             base=config.rope_theta,
         )
 
-        self.initialize_weights()
-
     def initialize_weights(self):
         # Initialize transformer layers:
         def basic_init(module):
@@ -343,7 +347,8 @@ class DiTModel(nn.Module):
                 adarms_cond,
                 attention_mask=attention_mask,
                 kv_cache=kv_cache,
-                preserve_rng_state=self.use_dropout,
+                # DEBUG: do not comment out
+                # preserve_rng_state=self.use_dropout,
             )
             torch.cuda.nvtx.range_pop()
 

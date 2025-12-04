@@ -10,10 +10,8 @@ import datetime
 from setproctitle import setproctitle
 
 import torch
-import torch.nn.functional as F
 import torch.distributed as dist
 from torch.distributed.tensor import DTensor
-from torch.utils.data import DistributedSampler
 from torch.distributed.fsdp._fully_shard import FSDPModule
 from torch.optim.lr_scheduler import CosineAnnealingLR
 
@@ -31,17 +29,18 @@ from vla_scratch.policies.base import BasePolicy
 from vla_scratch.policies.config import PolicyConfig
 from vla_scratch.datasets.config import DataConfig
 
+from vla_scratch.helpers.data import (
+    EagerEpochIterator,
+    PrefetchingEpochIterator,
+)
 
 from vla_scratch.helpers.training import (
     build_param_lr_groups,
     create_dataloaders,
-    get_beta_dist,
     aggregate_tensordict,
     compute_sample_mse,
-    expand_tensor,
+    log_model_state_sizes,
     print_with_rank,
-    sample_and_select_noise,
-    sample_time,
     setup_dist,
 )
 
@@ -78,6 +77,8 @@ class TrainConfig:
     num_workers: int = 8
     prefetch_factor: int = 6
     split_seed: int = 42
+    # epoch_iterator: str = "prefetch"  # "prefetch" or "eager"
+    epoch_iterator: str = "eager"  # "prefetch" or "eager"
     # optimization
     epochs: int = 20
     batch_size: int = 16
@@ -96,10 +97,6 @@ class TrainConfig:
     weight_decay: float = 1e-4
 
     clip_grad_norm: float = 1.0
-    num_noise_per_sample: int = 8
-    num_noise_before_topk: int = 8
-    detach_kv_cache: bool = False
-    disp_loss_weight: float = 0.25
 
     # logging and evaluation
     exp_name: str = "pi-training"
@@ -142,11 +139,6 @@ def main(cfg: DictConfig) -> None:
 
     train_cfg = cast(TrainConfig, OmegaConf.to_object(cfg))
 
-    if train_cfg.num_noise_before_topk < train_cfg.num_noise_per_sample:
-        raise ValueError(
-            "num_noise_before_topk must be >= num_noise_per_sample for top-k selection"
-        )
-
     # Resolve checkpoint path (supports file or directory)
     if train_cfg.checkpoint_path is not None:
         cp = Path(train_cfg.checkpoint_path).resolve()
@@ -165,7 +157,7 @@ def main(cfg: DictConfig) -> None:
     run_dir = run_dir.resolve()
     run_dir.mkdir(parents=True, exist_ok=True)
     os.chdir(run_dir)
-    setproctitle(f"{time_stamp}-{train_cfg.exp_name}")
+    setproctitle(f"{train_cfg.exp_name}")
 
     assert (
         train_cfg.eval_interval % train_cfg.log_interval == 0
@@ -181,7 +173,8 @@ def main(cfg: DictConfig) -> None:
         subtrain_dataloader,
     ) = create_dataloaders(train_cfg, world_size, global_rank, add_noise=True)
 
-    dummy_data: "DataSample" = next(iter(dataloader))[0][0:1].to(device)
+    dummy_data, _ = next(iter(dataloader))
+    dummy_data: "DataSample" = dummy_data[0:1].to(device)
     train_cfg.policy.action_dim = dummy_data.action_chunk.actions.shape[-1]
     train_cfg.policy.state_dim = dummy_data.observation.state.shape[-1]
 
@@ -189,44 +182,20 @@ def main(cfg: DictConfig) -> None:
     with torch.device(device):
         model: BasePolicy = train_cfg.policy.instantiate()
 
-    time_dist = get_beta_dist(1.0, 1.5, device=device)
     # Warmup pass
     print_with_rank("warmup pass...")
-    # TODO: wrap this into the policy class
-    (
-        _,
-        prefix_pad_masks,
-        prefix_key_values,
-        encoder_hidden_states,
-    ) = model.encode_prefix(dummy_data.observation)
-    actions = dummy_data.action_chunk.actions
-    timestep = sample_time(time_dist, dummy_data.shape)
-    v_t, disp_loss = model.predict_suffix(
-        state=dummy_data.observation.state,
-        prefix_pad_masks=prefix_pad_masks,
-        prefix_key_values=prefix_key_values,
-        encoder_hidden_states=encoder_hidden_states,
-        noisy_actions=actions,
-        time=timestep,
-    )
-    flow_mse = F.mse_loss(actions, v_t, reduction="none").mean()
-    loss = flow_mse + train_cfg.disp_loss_weight * disp_loss
+    loss, _ = model.compute_loss(dummy_data)
     loss.backward()
-    
-    # make all parameters to bfloat16
-    for param in model.parameters():
-        param.data = param.data.type(torch.bfloat16)
 
     model.initialize_weights()
 
-    if world_size > 1:
-        model.apply_fsdp(
-            param_type=torch.bfloat16,
-            reduce_type=torch.bfloat16,
-            output_dtype=torch.float32,
-            mesh=mesh,
-        )
-        model: FSDPModule | BasePolicy
+    model.apply_fsdp(
+        param_type=torch.bfloat16,
+        reduce_type=torch.float32,
+        output_dtype=torch.float32,
+        mesh=mesh,
+    )
+    model: FSDPModule | BasePolicy
 
     global_batch_size = train_cfg.batch_size * train_cfg.grad_accum_steps * world_size
     lr_cfg = dict(train_cfg.lr)
@@ -253,6 +222,7 @@ def main(cfg: DictConfig) -> None:
         foreach=False,
         fused=True,
     )
+    log_model_state_sizes(model, optimizer)
 
     if train_cfg.checkpoint_path is not None:
         load_checkpoint(
@@ -261,8 +231,6 @@ def main(cfg: DictConfig) -> None:
             global_rank=global_rank,
             optimizer=optimizer if train_cfg.load_optimizer else None,
         )
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
 
     if global_rank == 0:
         run = wandb.init(
@@ -280,14 +248,25 @@ def main(cfg: DictConfig) -> None:
 
         save_train_config(train_cfg, run_dir)
 
-
     global_step = 0
     scheduler = None
     steps_per_epoch = max(1, len(dataloader) // train_cfg.grad_accum_steps)
     last_time = time.perf_counter()
     log_tds = []
 
-    for epoch in range(train_cfg.epochs):
+    if train_cfg.epoch_iterator == "prefetch":
+        epoch_iterator_cls = PrefetchingEpochIterator
+    elif train_cfg.epoch_iterator == "eager":
+        epoch_iterator_cls = EagerEpochIterator
+    else:
+        raise ValueError(
+            f"Unsupported epoch_iterator '{train_cfg.epoch_iterator}', expected 'eager' or 'prefetch'."
+        )
+    epoch_iterator = epoch_iterator_cls(
+        dataloader=dataloader,
+        num_epochs=train_cfg.epochs,
+    )
+    for epoch, data_loader_iter in enumerate(epoch_iterator):
         # Initialize cosine annealing at the start of the first scheduled epoch
         if (
             scheduler is None
@@ -304,8 +283,6 @@ def main(cfg: DictConfig) -> None:
                 T_max=cosine_steps,
                 eta_min=1e-7,
             )
-        if isinstance(dataloader.sampler, DistributedSampler):
-            dataloader.sampler.set_epoch(epoch)
 
         pbar = tqdm(
             range(steps_per_epoch),
@@ -314,7 +291,6 @@ def main(cfg: DictConfig) -> None:
         )
 
         model.train()
-        data_loader_iter = iter(dataloader)
         for i in pbar:
             torch.cuda.nvtx.range_push("Zero Grad")
             if isinstance(model, FSDPModule):
@@ -326,75 +302,10 @@ def main(cfg: DictConfig) -> None:
                 torch.cuda.nvtx.range_push("DataLoader")
                 data_sample, perf_dict = next(data_loader_iter)
                 data_sample: "DataSample" = data_sample.to(device, non_blocking=True)
-                perf_dict = perf_dict.to(device, non_blocking=True)
+                perf_dict: TensorDict = perf_dict.to(device, non_blocking=True)
                 torch.cuda.nvtx.range_pop()
 
-                torch.cuda.nvtx.range_push("Model Encode Prefix")
-                (
-                    _,
-                    prefix_pad_masks,
-                    prefix_key_values,
-                    encoder_hidden_states,
-                ) = model.encode_prefix(
-                    observation=data_sample.observation,
-                )
-                torch.cuda.nvtx.range_pop()
-
-                torch.cuda.nvtx.range_push("Noise Sampling")
-                actions = data_sample.action_chunk.actions
-                selected_noise = sample_and_select_noise(
-                    actions,
-                    train_cfg,
-                    device=device,
-                )
-                torch.cuda.nvtx.range_pop()
-
-                torch.cuda.nvtx.range_push("Expand Data Sample")
-                data_sample = expand_tensor(data_sample, train_cfg.num_noise_per_sample)
-                prefix_pad_masks = expand_tensor(
-                    prefix_pad_masks, train_cfg.num_noise_per_sample
-                )
-                prefix_key_values = [
-                    (
-                        expand_tensor(k, train_cfg.num_noise_per_sample),
-                        expand_tensor(v, train_cfg.num_noise_per_sample),
-                    )
-                    for k, v in prefix_key_values
-                ]
-                encoder_hidden_states = [
-                    expand_tensor(h, train_cfg.num_noise_per_sample)
-                    for h in encoder_hidden_states
-                ]
-                torch.cuda.nvtx.range_pop()
-
-                if train_cfg.detach_kv_cache:
-                    torch.cuda.nvtx.range_push("Detach KV Cache")
-                    prefix_key_values = [
-                        (k.detach(), v.detach()) for k, v in prefix_key_values
-                    ]
-                    encoder_hidden_states = [h.detach() for h in encoder_hidden_states]
-                    torch.cuda.nvtx.range_pop()
-
-                torch.cuda.nvtx.range_push("Apply Noise")
-                actions = data_sample.action_chunk.actions
-                u_t = selected_noise - actions
-                timestep = sample_time(time_dist, data_sample.shape)
-                noisy_actions = actions + timestep[:, None, None] * u_t
-                torch.cuda.nvtx.range_pop()
-
-                torch.cuda.nvtx.range_push("Model Predict Suffix")
-                v_t, disp_loss = model.predict_suffix(
-                    state=data_sample.observation.state,
-                    prefix_pad_masks=prefix_pad_masks,
-                    prefix_key_values=prefix_key_values,
-                    encoder_hidden_states=encoder_hidden_states,
-                    noisy_actions=noisy_actions,
-                    time=timestep,
-                )
-                flow_mse = F.mse_loss(u_t, v_t, reduction="none").mean()
-                loss = flow_mse + train_cfg.disp_loss_weight * disp_loss
-                torch.cuda.nvtx.range_pop()
-
+                loss, loss_dict = model.compute_loss(data_sample)
                 torch.cuda.nvtx.range_push("Loss Backward")
                 (loss / train_cfg.grad_accum_steps / world_size).backward()
                 torch.cuda.nvtx.range_pop()
@@ -415,8 +326,7 @@ def main(cfg: DictConfig) -> None:
             torch.cuda.nvtx.range_pop()
 
             log_td = {}
-            log_td["loss/flow_mse"] = flow_mse.detach()
-            log_td["loss/disp_loss"] = disp_loss.detach()
+            log_td.update(loss_dict)
             if isinstance(norm_before_clip, DTensor):
                 norm_before_clip = norm_before_clip.full_tensor()
             log_td["loss/grad_norm"] = norm_before_clip
@@ -491,11 +401,11 @@ def main(cfg: DictConfig) -> None:
                 if global_rank == 0:
                     run.log(log_dict)
 
-        if (epoch + 1) % train_cfg.save_interval == 0:
-            save_checkpoint(model, optimizer, global_rank, f"checkpoint_{epoch+1}")
+            if (epoch + 1) % train_cfg.save_interval == 0:
+                save_checkpoint(model, optimizer, global_rank, f"checkpoint_{epoch+1}")
 
-    if world_size > 1:
-        dist.destroy_process_group()
+    epoch_iterator.finalize()
+    dist.destroy_process_group()
 
 
 if __name__ == "__main__":

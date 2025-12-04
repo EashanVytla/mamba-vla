@@ -8,6 +8,7 @@ from vla_scratch.transforms.base import TransformFn
 
 if TYPE_CHECKING:
     from vla_scratch.transforms.data_types import DataSample
+    from transformers import Qwen3VLProcessor
 
 
 class QwenPolicyInput(TensorClass):
@@ -33,9 +34,7 @@ class QwenProcessor(TransformFn):
     ) -> None:
         processors = importlib.import_module("transformers")
         processor_cls = getattr(processors, processor_class)
-        self.processor = processor_cls.from_pretrained(model_id)
-        if hasattr(self.processor, "tokenizer"):
-            self.processor.tokenizer.padding_side = "left"
+        self.processor: "Qwen3VLProcessor" = processor_cls.from_pretrained(model_id)
         self.max_length = max_length
         self.add_generation_prompt = add_generation_prompt
         self.padding = padding
@@ -52,11 +51,13 @@ class QwenProcessor(TransformFn):
             tokenize=True,
             add_generation_prompt=True,
             return_dict=True,
+
             text_kwargs={
                 "max_length": self.max_length,
-                "truncation": True,
+                "truncation": False,
                 "padding": self.padding,
                 "return_tensors": "pt",
+                "padding_side": "left",
             },
         )
 

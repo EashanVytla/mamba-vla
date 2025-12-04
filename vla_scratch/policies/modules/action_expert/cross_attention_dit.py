@@ -90,11 +90,16 @@ class RotaryEmbedding(nn.Module):
                 f"Expected position_ids to have shape (batch, seq), got {position_ids.shape}"
             )
         freqs = torch.einsum(
-            "bi,j->bij", position_ids.float(), self.inv_freq.to(position_ids.device)
+            "bi,j->bij",
+            position_ids.float(),
+            self.inv_freq.to(position_ids.device, dtype=torch.float32),
         )
-        emb = torch.cat((freqs, freqs), dim=-1)
-        cos = emb.cos().to(dtype=dtype)
-        sin = emb.sin().to(dtype=dtype)
+        emb = torch.cat((freqs, freqs), dim=-1).to(dtype=torch.float32)
+        cos = emb.cos()
+        sin = emb.sin()
+        if cos.dtype != dtype:
+            cos = cos.to(dtype=dtype)
+            sin = sin.to(dtype=dtype)
         return cos, sin
 
 

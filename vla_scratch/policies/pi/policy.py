@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import List, Tuple, TYPE_CHECKING, Optional
+from typing import List, Tuple, TYPE_CHECKING, Optional, Dict
 
 import einops
 import jaxtyping as at
@@ -15,18 +15,27 @@ from torch.distributed.fsdp._fully_shard import (
 
 from vla_scratch.policies.base import BasePolicy
 from vla_scratch.policies.modules.action_expert.dit import DiTModel
-from vla_scratch.policies.modules.action_expert.cross_attention_dit import DiTModel as CrossAttentionDiTModel
+from vla_scratch.policies.modules.action_expert.cross_attention_dit import (
+    DiTModel as CrossAttentionDiTModel,
+)
 from vla_scratch.policies.modules.vlm_bridge.paligemma.bridge import PaligemmaBridge
 from vla_scratch.policies.modules.vlm_bridge.qwen.bridge import Qwen3VLBridge
 from vla_scratch.policies.utils.training import (
     apply_checkpoint_when_training,
     fully_shard_layers,
 )
+from vla_scratch.policies.utils.diffusion import (
+    build_beta_time_dist,
+    repeat_batch,
+    sample_clamped_time,
+    sample_topk_noise,
+)
 from vla_scratch.policies.utils.transformers import (
     create_sinusoidal_pos_embedding,
     make_att_2d_masks,
     sample_noise,
 )
+from vla_scratch.policies.modules.vlm_bridge.data_types import VLMOutputs
 
 if TYPE_CHECKING:
     from vla_scratch.policies.pi.config import PiConfig
@@ -35,13 +44,29 @@ if TYPE_CHECKING:
         KVCache,
         PrefixPadMask,
     )
-    from vla_scratch.transforms.data_types import Observation
+    from vla_scratch.transforms.data_types import Observation, DataSample
+
+
+from tensordict import TensorClass
+
+
+class EncodingOutput(TensorClass):
+    last_hidden_state: at.Float[torch.Tensor, "*b seq_len hidden"]
+    prefix_pad_masks: at.Bool[torch.Tensor, "*b seq_len"]
+    key_states: at.Float[torch.Tensor, "*b n_layer n_head seq_len head_dim"]
+    value_states: at.Float[torch.Tensor, "*b n_layer n_head seq_len head_dim"]
+    hidden_state_list: at.Float[torch.Tensor, "*b n_layer seq_len hidden"]
 
 
 class PiPolicy(BasePolicy):
     def __init__(self, config: "PiConfig"):
         super().__init__()
         self.config = config
+
+        if config.num_noise_before_topk < config.num_noise_per_sample:
+            raise ValueError(
+                "num_noise_before_topk must be >= num_noise_per_sample for top-k selection"
+            )
 
         if config.action_dim is None or config.state_dim is None:
             raise ValueError(
@@ -145,18 +170,26 @@ class PiPolicy(BasePolicy):
                 torch.zeros(suffix_len, action_expert_config.hidden_size)
             )
 
+        self.suffix_len = suffix_len
         self.register_buffer("suffix_pad_mask", suffix_pad_mask, persistent=False)
         self.register_buffer("suffix_att_mask", suffix_att_mask, persistent=False)
         self.suffix_pad_mask: at.Bool[torch.Tensor, "action_horizon"]
         self.suffix_att_mask: at.Bool[torch.Tensor, "action_horizon"]
 
+        param_device = next(self.parameters()).device
+        self.time_dist = build_beta_time_dist(
+            self.config.time_dist_alpha,
+            self.config.time_dist_beta,
+            device=param_device,
+        )
+
     def initialize_weights(self):
-        nn.init.xavier_uniform_(self.state_in_proj.weight)
-        nn.init.zeros_(self.state_in_proj.bias)
-        nn.init.xavier_uniform_(self.action_in_proj.weight)
-        nn.init.zeros_(self.action_in_proj.bias)
-        nn.init.xavier_uniform_(self.action_out_proj.weight)
-        nn.init.zeros_(self.action_out_proj.bias)
+        # nn.init.xavier_uniform_(self.state_in_proj.weight)
+        # nn.init.zeros_(self.state_in_proj.bias)
+        # nn.init.xavier_uniform_(self.action_in_proj.weight)
+        # nn.init.zeros_(self.action_in_proj.bias)
+        # nn.init.xavier_uniform_(self.action_out_proj.weight)
+        # nn.init.zeros_(self.action_out_proj.bias)
         if self.config.suffix_add_pos_emb:
             nn.init.normal_(self.position_embedding, mean=0.0, std=0.02)
         self.action_expert.initialize_weights()
@@ -183,15 +216,11 @@ class PiPolicy(BasePolicy):
         register_fsdp_forward_method(self, "encode_prefix")
         register_fsdp_forward_method(self, "predict_suffix")
         register_fsdp_forward_method(self, "sample_actions")
+        register_fsdp_forward_method(self, "compute_loss")
 
     def encode_prefix(
         self, observation: "Observation"
-    ) -> Tuple[
-        "HiddenState",
-        "PrefixPadMask",
-        List["KVCache"],
-        List[torch.Tensor],
-    ]:
+    ) -> Tuple[float, EncodingOutput, Dict]:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
         # Prepare extra observation register tokens if configured
         extra_embs = None
@@ -204,20 +233,205 @@ class PiPolicy(BasePolicy):
             extra_att = self.obs_registers_att_masks
 
         # Bridge handles model-specific preprocessing + transformer forward
-        (
-            hidden_states,
-            prefix_pad_masks,
-            kv_cache_list,
-            encoder_hidden_states,
-        ) = self.vlm_bridge.encode_prefix(
+        vlm_outputs, log_dict = self.vlm_bridge.encode(
             observation=observation,
             extra_embs=extra_embs,
             extra_pad_masks=extra_pad,
             extra_att_masks=extra_att,
         )
-        return hidden_states, prefix_pad_masks, kv_cache_list, encoder_hidden_states
 
-    def embed_suffix(
+        # only retain last N layers for action expert
+        kv_cache_list = vlm_outputs.kv_cache_list[-self.action_expert_layers :]
+        hidden_states_list = vlm_outputs.hidden_state_list[-self.action_expert_layers :]
+        # only use the last num_obs_registers tokens from the prefix for the expert
+        if self.config.expert_only_use_register:
+            torch.cuda.nvtx.range_push("select_obs_registers")
+            num_registers = self.config.num_obs_registers
+            prefix_pad_masks = vlm_outputs.prefix_pad_masks[:, -num_registers:]
+            kv_cache_list = [
+                (
+                    kv[0][..., -num_registers:, :],
+                    kv[1][..., -num_registers:, :],
+                )
+                for kv in kv_cache_list
+            ]
+            hidden_states_list = [h[:, -num_registers:, :] for h in hidden_states_list]
+            torch.cuda.nvtx.range_pop()
+
+        key_states = torch.stack([kv[0] for kv in kv_cache_list], dim=1)
+        value_states = torch.stack([kv[1] for kv in kv_cache_list], dim=1)
+        hidden_states = torch.stack(hidden_states_list, dim=1)
+        encoding_output = EncodingOutput(
+            last_hidden_state=vlm_outputs.last_hidden_state,
+            prefix_pad_masks=prefix_pad_masks,
+            key_states=key_states,
+            value_states=value_states,
+            hidden_state_list=hidden_states,
+            batch_size=observation.shape,
+        )
+        return 0.0, encoding_output, log_dict
+
+    def predict_suffix(
+        self,
+        state,
+        prefix_pad_masks,
+        prefix_key_values: List["KVCache"],
+        encoder_hidden_states: Optional[List[torch.Tensor]],
+        noisy_actions,
+        time,
+    ):
+        """Apply one denoising step of `noisy_actions` at a given timestep."""
+        torch.cuda.nvtx.range_push("embed_suffix")
+        suffix_embs, suffix_pad_masks, suffix_att_masks, time_emb = self._embed_suffix(
+            state, noisy_actions, time
+        )
+        torch.cuda.nvtx.range_pop()
+
+        torch.cuda.nvtx.range_push("attention_mask")
+        suffix_att_2d_masks = make_att_2d_masks(suffix_pad_masks, suffix_att_masks)
+        prefix_pad_mask = einops.repeat(
+            prefix_pad_masks, "b p -> b s p", s=self.suffix_len
+        )
+        full_att_2d_mask = torch.cat([prefix_pad_mask, suffix_att_2d_masks], dim=2)
+        full_att_mask = einops.rearrange(full_att_2d_mask, "b i j -> b 1 i j")
+        torch.cuda.nvtx.range_pop()
+
+        torch.cuda.nvtx.range_push("position_ids")
+        prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
+        position_ids = prefix_offsets + torch.cumsum(suffix_pad_masks, dim=1) - 1
+        torch.cuda.nvtx.range_pop()
+
+        suffix_out, _, disp_loss = self.action_expert.forward(
+            inputs_embeds=suffix_embs,
+            position_ids=position_ids,
+            adarms_cond=time_emb,
+            attention_mask=full_att_mask,
+            past_key_values=prefix_key_values,
+            encoder_hidden_states=encoder_hidden_states,
+        )
+
+        suffix_out = suffix_out[:, -self.config.action_horizon :, :]
+        return disp_loss, self.action_out_proj(suffix_out)
+
+    def compute_loss(
+        self,
+        data_sample: "DataSample",
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        torch.cuda.nvtx.range_push("Model Encode Prefix")
+        _, encoding_output, log_dict = self.encode_prefix(
+            observation=data_sample.observation
+        )
+        torch.cuda.nvtx.range_pop()
+
+        if self.config.detach_kv_cache:
+            torch.cuda.nvtx.range_push("Detach KV Cache")
+            encoding_output = encoding_output.detach()
+            torch.cuda.nvtx.range_pop()
+
+        torch.cuda.nvtx.range_push("Noise Sampling")
+        actions = data_sample.action_chunk.actions
+        selected_noise = sample_topk_noise(
+            actions,
+            self.config.num_noise_before_topk,
+            self.config.num_noise_per_sample,
+            device=actions.device,
+        )
+        torch.cuda.nvtx.range_pop()
+
+        torch.cuda.nvtx.range_push("Expand Data Sample")
+        data_sample = repeat_batch(data_sample, self.config.num_noise_per_sample)
+        encoding_output = repeat_batch(
+            encoding_output, self.config.num_noise_per_sample
+        )
+        prefix_pad_masks = encoding_output.prefix_pad_masks
+        # TODO: use zip, ubind to simplify this
+        prefix_key_values = [
+            (
+                encoding_output.key_states[:, i, :, :, :],
+                encoding_output.value_states[:, i, :, :, :],
+            )
+            for i in range(encoding_output.key_states.shape[1])
+        ]
+        encoder_hidden_states = encoding_output.hidden_state_list.unbind(dim=1)
+        torch.cuda.nvtx.range_pop()
+
+
+        torch.cuda.nvtx.range_push("Apply Noise")
+        actions = data_sample.action_chunk.actions
+        u_t = selected_noise - actions
+        timestep = sample_clamped_time(self.time_dist, data_sample.shape)
+        noisy_actions = actions + timestep[:, None, None] * u_t
+        torch.cuda.nvtx.range_pop()
+
+        torch.cuda.nvtx.range_push("Model Predict Suffix")
+        disp_loss, v_t = self.predict_suffix(
+            state=data_sample.observation.state,
+            prefix_pad_masks=prefix_pad_masks,
+            prefix_key_values=prefix_key_values,
+            encoder_hidden_states=encoder_hidden_states,
+            noisy_actions=noisy_actions,
+            time=timestep,
+        )
+        flow_mse = torch.nn.functional.mse_loss(
+            u_t.to(v_t.dtype), v_t, reduction="none"
+        ).mean()
+        loss = flow_mse + self.config.disp_loss_weight * disp_loss
+        torch.cuda.nvtx.range_pop()
+
+        log_dict.update(
+            {
+                "loss/flow_mse": flow_mse.detach(),
+                "loss/disp_loss": disp_loss.detach(),
+            }
+        )
+
+        return loss, log_dict
+
+    @torch.inference_mode()
+    def sample_actions(
+        self, observation: "Observation", num_steps=10
+    ) -> at.Float[torch.Tensor, "*batch_size chunk_size action_dim"]:
+        """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
+        _, encoding_output, log_dict = self.encode_prefix(observation)
+        prefix_pad_masks = encoding_output.prefix_pad_masks
+        prefix_key_values = [
+            (
+                encoding_output.key_states[:, i, :, :, :],
+                encoding_output.value_states[:, i, :, :, :],
+            )
+            for i in range(encoding_output.key_states.shape[1])
+        ]
+        encoder_hidden_states = encoding_output.hidden_state_list.unbind(dim=1)
+
+        bsize = observation.shape[0]
+        device = observation.device
+        dtype = observation.state.dtype
+
+        actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
+        noise = sample_noise(actions_shape, device, dtype)
+
+        dt_float = 1.0 / num_steps
+        time_float = 1.0
+        dt = torch.tensor(dt_float, dtype=dtype, device=device)
+        time = torch.tensor(time_float, dtype=dtype, device=device)
+
+        x_t = noise
+        while time_float >= dt_float / 2:
+            _, v_t = self.predict_suffix(
+                observation.state,
+                prefix_pad_masks,
+                prefix_key_values,
+                encoder_hidden_states,
+                x_t,
+                time.expand(bsize),
+            )
+
+            x_t = x_t - dt * v_t
+            time -= dt
+            time_float -= dt_float
+        return x_t
+
+    def _embed_suffix(
         self,
         state: at.Float[torch.Tensor, "*batch_size state_history state_dim"],
         noisy_actions: at.Float[torch.Tensor, "*batch_size action_horizon action_dim"],
@@ -248,7 +462,7 @@ class PiPolicy(BasePolicy):
             suffix_emb = torch.cat([state_emb, action_emb], dim=1)
         else:
             suffix_emb = action_emb
-        
+
         if self.config.suffix_add_pos_emb:
             suffix_emb.add_(self.position_embedding.unsqueeze(0))
 
@@ -261,115 +475,3 @@ class PiPolicy(BasePolicy):
         )
 
         return suffix_emb, pad_mask, att_mask, time_emb
-
-    def predict_suffix(
-        self,
-        state,
-        prefix_pad_masks,
-        prefix_key_values: List["KVCache"],
-        encoder_hidden_states: Optional[List[torch.Tensor]],
-        noisy_actions,
-        time,
-    ):
-        """Apply one denoising step of `noisy_actions` at a given timestep."""
-        torch.cuda.nvtx.range_push("embed_suffix")
-        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = (
-            self.embed_suffix(state, noisy_actions, time)
-        )
-        torch.cuda.nvtx.range_pop()
-
-        torch.cuda.nvtx.range_push("attention_mask")
-        suffix_len = suffix_pad_masks.shape[1]
-        suffix_att_2d_masks = make_att_2d_masks(suffix_pad_masks, suffix_att_masks)
-        prefix_pad_mask = einops.repeat(prefix_pad_masks, "b p -> b s p", s=suffix_len)
-        full_att_2d_mask = torch.cat([prefix_pad_mask, suffix_att_2d_masks], dim=2)
-        full_att_mask = einops.rearrange(full_att_2d_mask, "b i j -> b 1 i j")
-        # shape: [batch_size, 1, suffix_len, prefix_len + suffix_len]
-        torch.cuda.nvtx.range_pop()
-
-        prefix_key_values = prefix_key_values[-self.action_expert_layers :]
-        encoder_hidden_states = encoder_hidden_states[-self.action_expert_layers :]
-        # only use the last num_obs_registers tokens from the prefix for the expert
-        if self.config.expert_only_use_register:
-            torch.cuda.nvtx.range_push("select_obs_registers")
-            num_registers = self.config.num_obs_registers
-            prefix_key_values = [
-                (
-                    kv[0][..., -num_registers:, :],
-                    kv[1][..., -num_registers:, :],
-                )
-                for kv in prefix_key_values
-            ]
-            encoder_hidden_states = [
-                h[:, -num_registers:, :] for h in encoder_hidden_states
-            ]
-            full_att_mask = full_att_mask[..., -(num_registers + suffix_len) :]
-            torch.cuda.nvtx.range_pop()
-
-        torch.cuda.nvtx.range_push("position_ids")
-        prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
-        position_ids = prefix_offsets + torch.cumsum(suffix_pad_masks, dim=1) - 1
-        torch.cuda.nvtx.range_pop()
-
-        suffix_out, _, disp_loss = self.action_expert.forward(
-            inputs_embeds=suffix_embs,
-            position_ids=position_ids,
-            adarms_cond=adarms_cond,
-            attention_mask=full_att_mask,
-            past_key_values=prefix_key_values,
-            encoder_hidden_states=encoder_hidden_states,
-        )
-        breakpoint()
-        # self.action_expert.forward(inputs_embeds=suffix_embs, position_ids=position_ids, adarms_cond=adarms_cond, attention_mask=full_att_mask, past_key_values=prefix_key_values, encoder_hidden_states=encoder_hidden_states)[0]
-
-        # perm_encoder = torch.randperm(encoder_hidden_states[0].shape[1])
-        # self.action_expert.forward(inputs_embeds=suffix_embs, position_ids=position_ids, adarms_cond=adarms_cond, attention_mask=full_att_mask, past_key_values=prefix_key_values, encoder_hidden_states=[h[:, perm_encoder] for h in encoder_hidden_states])[0]
-
-        # perm = torch.randperm(suffix_embs.shape[1])
-        # inv = torch.empty_like(perm)
-        # inv[perm] = torch.arange(perm.numel(), device=perm.device)
-        # self.action_expert.forward(inputs_embeds=suffix_embs[:, perm], position_ids=position_ids, adarms_cond=adarms_cond, attention_mask=full_att_mask, past_key_values=prefix_key_values, encoder_hidden_states=encoder_hidden_states)[0][:, inv]
-        
-
-        suffix_out = suffix_out[:, -self.config.action_horizon :, :]
-        return self.action_out_proj(suffix_out), disp_loss
-
-    @torch.inference_mode()
-    def sample_actions(
-        self, observation: "Observation", num_steps=10
-    ) -> at.Float[torch.Tensor, "*batch_size chunk_size action_dim"]:
-        """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
-        (
-            _,
-            prefix_pad_masks,
-            prefix_key_values,
-            encoder_hidden_states,
-        ) = self.encode_prefix(observation)
-
-        bsize = observation.shape[0]
-        device = observation.device
-        dtype = observation.state.dtype
-
-        actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
-        noise = sample_noise(actions_shape, device, dtype)
-
-        dt_float = 1.0 / num_steps
-        time_float = 1.0
-        dt = torch.tensor(dt_float, dtype=dtype, device=device)
-        time = torch.tensor(time_float, dtype=dtype, device=device)
-
-        x_t = noise
-        while time_float >= dt_float / 2:
-            v_t, _ = self.predict_suffix(
-                observation.state,
-                prefix_pad_masks,
-                prefix_key_values,
-                encoder_hidden_states,
-                x_t,
-                time.expand(bsize),
-            )
-
-            x_t = x_t - dt * v_t
-            time -= dt
-            time_float -= dt_float
-        return x_t

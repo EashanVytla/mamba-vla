@@ -20,6 +20,13 @@ class PiConfig(PolicyConfig):
     num_obs_registers: int = 0
     expert_only_use_register: bool = False
 
+    num_noise_per_sample: int = 4
+    num_noise_before_topk: int = 4
+    detach_kv_cache: bool = False
+    disp_loss_weight: float = 0.25
+    time_dist_alpha: float = 1.0
+    time_dist_beta: float = 1.5
+
 
 default_pi_config = PiConfig(
     _target_="vla_scratch.policies.pi.policy.PiPolicy",
@@ -65,7 +72,8 @@ Cs.store(
                 "_target_": "vla_scratch.policies.modules.vlm_bridge.qwen.processor.QwenProcessor",
                 "processor_class": "Qwen3VLProcessor",
                 "model_id": "Qwen/Qwen3-VL-2B-Instruct",
-                "max_length": 512,
+                "max_length": 256, 
+                # WARN: select this based on your image sizes and prompt lengths, try to make it minimum as possible because if impacts iteration time a lot!
                 "add_generation_prompt": True,
                 "padding": "max_length",
             }

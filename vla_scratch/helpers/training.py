@@ -4,16 +4,14 @@ import datetime
 import logging
 import os
 from typing import TYPE_CHECKING, Any, Mapping, Set
-
-import einops
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
+from torch.distributed.tensor import DTensor
 
 from vla_scratch.helpers.data import create_dataset
-from vla_scratch.policies.utils.transformers import sample_noise
 
 if TYPE_CHECKING:
     from tensordict import TensorDict
@@ -58,6 +56,7 @@ def setup_dist():
                     (world_size,),
                     mesh_dim_names=("process",),
                 )
+        print(f"Initialized DDP: rank {global_rank}/{world_size}, local rank {local_rank}")
     except ValueError:
         local_rank = 0
         global_rank = 0
@@ -69,83 +68,6 @@ def setup_dist():
 
 def print_with_rank(string: str) -> None:
     print(f"[Rank {global_rank}] {string}")
-
-
-def get_beta_dist(
-    alpha: float,
-    beta: float,
-    device: torch.device | str,
-) -> torch.distributions.Distribution:
-    """Construct a Beta distribution on the training device."""
-    alpha_t = torch.as_tensor(alpha, dtype=torch.float32, device=device)
-    beta_t = torch.as_tensor(beta, dtype=torch.float32, device=device)
-    return torch.distributions.Beta(beta_t, alpha_t)
-
-
-def sample_time(
-    time_dist: torch.distributions.Distribution,
-    shape: torch.Size,
-) -> torch.Tensor:
-    """Sample diffusion timesteps with a small clamp to avoid numerical issues."""
-    return time_dist.sample(shape) * 0.999 + 0.001
-
-
-def sample_and_select_noise(
-    actions: torch.Tensor,
-    train_cfg: "TrainConfig",
-    *,
-    device: torch.device,
-) -> torch.Tensor:
-    """Draw noisy action candidates and choose the closest ones to the target actions."""
-    batch_size, action_horizon, action_dim = actions.shape
-    candidate_shape = (
-        batch_size,
-        train_cfg.num_noise_before_topk,
-        action_horizon,
-        action_dim,
-    )
-    noise_candidates = sample_noise(
-        candidate_shape,
-        device,
-        dtype=actions.dtype,
-    )
-    action_flat = einops.rearrange(
-        actions, "b h d -> b 1 (h d)", h=action_horizon, d=action_dim
-    )
-    noise_flat = einops.rearrange(
-        noise_candidates,
-        "b k h d -> b k (h d)",
-        h=action_horizon,
-        d=action_dim,
-    )
-    if train_cfg.num_noise_before_topk == train_cfg.num_noise_per_sample:
-        selected_noise_flat = noise_flat
-    else:
-        distances = torch.sum((noise_flat - action_flat) ** 2, dim=-1)
-        topk_indices = torch.topk(
-            distances,
-            k=train_cfg.num_noise_per_sample,
-            dim=1,
-            largest=False,
-        ).indices
-        gather_idx = topk_indices.unsqueeze(-1).expand(
-            -1,
-            -1,
-            noise_flat.shape[-1],
-        )
-        selected_noise_flat = torch.gather(
-            noise_flat,
-            dim=1,
-            index=gather_idx,
-        )
-
-    selected_noise = einops.rearrange(
-        selected_noise_flat,
-        "b k (h d) -> (k b) h d",
-        h=action_horizon,
-        d=action_dim,
-    )
-    return selected_noise
 
 
 def _create_dataloader(
@@ -336,12 +258,6 @@ def compute_sample_mse(
         squared_errors.append(squared_error.mean())
 
     return torch.stack(squared_errors).mean()
-
-
-def expand_tensor(t: torch.Tensor, repeat_times: int) -> torch.Tensor:
-    return t.expand(repeat_times, *t.shape).reshape(-1, *t.shape[1:])
-
-
 def aggregate_tensordict(td: "TensorDict", world_size: int) -> dict[str, float]:
     flat_td = td.flatten_keys(separator="/")
     if world_size <= 1:
@@ -358,3 +274,135 @@ def aggregate_tensordict(td: "TensorDict", world_size: int) -> dict[str, float]:
 
     agg_values = vec.detach().cpu().tolist()
     return {k: float(agg_values[i]) for i, k in enumerate(keys_sorted)}
+
+
+def _add_dtype_bytes(
+    dtype_bytes: dict[torch.dtype, int], dtype: torch.dtype, num_bytes: int
+) -> None:
+    dtype_bytes[dtype] = dtype_bytes.get(dtype, 0) + num_bytes
+
+
+def _accumulate_tensor_stats(
+    tensors: list[torch.Tensor | DTensor],
+) -> tuple[int, dict[torch.dtype, int]]:
+    """Return total bytes and float-dtype bytes for a list of tensors."""
+    total_bytes_local = 0
+    total_bytes_global = 0
+    float_dtype_bytes: dict[torch.dtype, int] = {}
+    for tensor in tensors:
+        if isinstance(tensor, DTensor):
+            tensor = tensor.to_local()
+            num_bytes = tensor.numel() * tensor.element_size()
+            total_bytes_local += num_bytes
+            total_bytes_global += num_bytes * dist.get_world_size()
+        else:
+            num_bytes = tensor.numel() * tensor.element_size()
+            total_bytes_local += num_bytes
+            total_bytes_global += num_bytes
+        if tensor.is_floating_point():
+            _add_dtype_bytes(float_dtype_bytes, tensor.dtype, num_bytes)
+    return total_bytes_local, total_bytes_global, float_dtype_bytes
+
+
+def _accumulate_state_stats(state: Any) -> tuple[int, dict[torch.dtype, int]]:
+    """Recursively return total bytes and float-dtype bytes for optimizer state."""
+    if isinstance(state, (torch.Tensor, DTensor)):
+        local_tensor = state.to_local() if isinstance(state, DTensor) else state
+        num_bytes = local_tensor.numel() * local_tensor.element_size()
+        float_dtype_bytes: dict[torch.dtype, int] = {}
+        if local_tensor.is_floating_point():
+            _add_dtype_bytes(float_dtype_bytes, local_tensor.dtype, num_bytes)
+        return num_bytes, float_dtype_bytes
+
+    if isinstance(state, Mapping):
+        total_bytes = 0
+        float_dtype_bytes: dict[torch.dtype, int] = {}
+        for value in state.values():
+            child_bytes, child_dtype_bytes = _accumulate_state_stats(value)
+            total_bytes += child_bytes
+            for dtype, bytes_ in child_dtype_bytes.items():
+                _add_dtype_bytes(float_dtype_bytes, dtype, bytes_)
+        return total_bytes, float_dtype_bytes
+
+    if isinstance(state, (list, tuple)):
+        total_bytes = 0
+        float_dtype_bytes: dict[torch.dtype, int] = {}
+        for value in state:
+            child_bytes, child_dtype_bytes = _accumulate_state_stats(value)
+            total_bytes += child_bytes
+            for dtype, bytes_ in child_dtype_bytes.items():
+                _add_dtype_bytes(float_dtype_bytes, dtype, bytes_)
+        return total_bytes, float_dtype_bytes
+
+    return 0, {}
+
+
+def _format_dtype_bytes(dtype_bytes: dict[torch.dtype, int]) -> str:
+    if not dtype_bytes:
+        return "none"
+    parts = [
+        f"{dtype.__str__().replace('torch.', '')}={bytes_ / (1024**2):.2f}MB"
+        for dtype, bytes_ in sorted(dtype_bytes.items(), key=lambda x: x[0].__str__())
+    ]
+    return ", ".join(parts)
+
+
+def log_model_state_sizes(
+    policy: "BasePolicy", optimizer: torch.optim.Optimizer
+) -> None:
+    """Print local-shard sizes (MB) for params, buffers, grads, and optimizer state."""
+    params = list(policy.parameters())
+    buffers = list(policy.buffers())
+    grads = [p.grad for p in params if p.grad is not None]
+
+
+    param_bytes_local, param_bytes_global, param_dtype_bytes = _accumulate_tensor_stats(
+        params
+    )
+    buffer_bytes_local, buffer_bytes_global, buffer_dtype_bytes = _accumulate_tensor_stats(
+        buffers
+    )
+    grad_bytes_local, grad_bytes_global, grad_dtype_bytes = _accumulate_tensor_stats(
+        grads
+    )
+    optim_bytes_local = 0
+    optim_dtype_bytes: dict[torch.dtype, int] = {}
+    for state in optimizer.state.values():
+        state_bytes, state_dtype_bytes = _accumulate_state_stats(state)
+        optim_bytes_local += state_bytes
+        for dtype, bytes_ in state_dtype_bytes.items():
+            _add_dtype_bytes(optim_dtype_bytes, dtype, bytes_)
+
+    def to_mb(num_bytes: int) -> float:
+        return num_bytes / (1024**2)
+
+    total_bytes_local = (
+        param_bytes_local
+        + buffer_bytes_local
+        + grad_bytes_local
+        + optim_bytes_local
+    )
+    total_bytes_global = (
+        param_bytes_global
+        + buffer_bytes_global
+        + grad_bytes_global
+    )
+    # global means full model, not sum over all ranks
+    msg = (
+        "Tensor sizes (MB): "
+        f"params[local={to_mb(param_bytes_local):.2f}, "
+        f"global={to_mb(param_bytes_global):.2f}], "
+        f"buffers[local={to_mb(buffer_bytes_local):.2f}, "
+        f"global={to_mb(buffer_bytes_global):.2f}], "
+        f"grads[local={to_mb(grad_bytes_local):.2f}, "
+        f"global={to_mb(grad_bytes_global):.2f}], "
+        f"optim_state[local={to_mb(optim_bytes_local):.2f}] | "
+        f"Total[local={to_mb(total_bytes_local):.2f}, "
+        f"global={to_mb(total_bytes_global):.2f}]; "
+        "float dtypes: "
+        f"params[{_format_dtype_bytes(param_dtype_bytes)}], "
+        f"buffers[{_format_dtype_bytes(buffer_dtype_bytes)}], "
+        f"grads[{_format_dtype_bytes(grad_dtype_bytes)}], "
+        f"optim_state[{_format_dtype_bytes(optim_dtype_bytes)}]"
+    )
+    print_with_rank(msg)

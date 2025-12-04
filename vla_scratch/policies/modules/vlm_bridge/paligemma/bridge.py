@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import importlib
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import List, Optional, Tuple, TYPE_CHECKING, Dict
 
 import einops
 import torch
@@ -18,6 +18,7 @@ from vla_scratch.policies.modules.vlm_bridge.paligemma.utils import (
     replace_paligemma_forward,
 )
 from vla_scratch.policies.utils.transformers import make_att_2d_masks
+from vla_scratch.policies.modules.vlm_bridge.data_types import VLMOutputs
 
 if TYPE_CHECKING:
     from transformers.models.gemma.modeling_gemma import GemmaModel
@@ -57,19 +58,14 @@ class PaligemmaBridge(VLMBridge):
         )
 
     @replace_paligemma_forward()
-    def encode_prefix(
+    def encode(
         self,
         *,
         observation: "Observation",
         extra_embs: Optional[torch.Tensor] = None,
         extra_pad_masks: Optional[torch.Tensor] = None,
         extra_att_masks: Optional[torch.Tensor] = None,
-    ) -> Tuple[
-        torch.Tensor,
-        torch.Tensor,
-        List[Tuple[torch.Tensor, torch.Tensor]],
-        Optional[List[torch.Tensor]],
-    ]:
+    ) -> Tuple[VLMOutputs, Dict]:
         policy_input = observation.policy_input
         if not isinstance(policy_input, PaligemmaPolicyInput):
             raise TypeError("Observation policy_input must be PaligemmaPolicyInput")
@@ -138,4 +134,11 @@ class PaligemmaBridge(VLMBridge):
             torch.cuda.nvtx.range_pop()
 
         hidden_states = lm.norm(hidden_states)
-        return hidden_states, prefix_pad_masks, kv_cache_list, None
+        
+        vlm_outputs = VLMOutputs(
+            last_hidden_state=hidden_states,
+            prefix_pad_masks=prefix_pad_masks,
+            hidden_state_list=None,
+            kv_cache_list=tuple(kv_cache_list),
+        )
+        return vlm_outputs, {}
