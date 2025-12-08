@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import List, Tuple, Callable
+from dataclasses import dataclass, field
+from typing import List, Tuple, Callable, Optional
 import einops
 
 import torch
@@ -10,10 +10,12 @@ from torch.nn import RMSNorm
 from transformers.activations import ACT2FN
 
 from vla_scratch.policies.utils.data_types import *
-# from vla_scratch.policies.utils.transformers import apply_rotary_pos_emb
+
+from vla_scratch.policies.utils.transformers import apply_rotary_pos_emb
 from vla_scratch.policies.utils.training import apply_checkpoint_when_training
 
 from torch.nn.modules.lazy import LazyModuleMixin
+
 
 class LazyRMSNorm(LazyModuleMixin, torch.nn.Module):
     def __init__(self, eps=1e-6):
@@ -29,7 +31,8 @@ class LazyRMSNorm(LazyModuleMixin, torch.nn.Module):
             self.initialize_parameters(x)
 
         return torch.rms_norm(x, self.normalized_shape, eps=self.eps)
-    
+
+
 @torch.compile
 def modulate(x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
@@ -111,18 +114,22 @@ class DiTConfig:
     num_key_value_heads: int
     head_dim: int
 
+    cross_attention_every: int = 2
+    qk_norm: Optional[str] = "layernorm"
+    rotary_self_attn: bool = True
+
     attn_dropout: float = 0.0
     mlp_dropout: float = 0.0
     mlp_activation: str = "silu"
 
     num_hidden_layers: int = 12
-    layers_for_dispersive_loss = [6]
+    layers_for_dispersive_loss: list[int] = field(default_factory=lambda: [6])
     # layers_for_dispersive_loss = [4, 6, 8]
     dispersive_loss_tau: float = 1.0
 
     rms_norm_eps: float = 1e-6
     attention_dropout: float = 0.0
-    attention_bias: bool = False
+    attention_bias: bool = True
     max_position_embeddings: int = 8192
     rope_theta: float = 10000.0
 
@@ -159,11 +166,32 @@ class Attention(nn.Module):
             config.hidden_size,
             bias=config.attention_bias,
         )
+        qk_norm_type = config.qk_norm.lower() if config.qk_norm is not None else None
+        if qk_norm_type is None:
+            self.q_norm = None
+            self.k_norm = None
+        elif qk_norm_type == "layernorm":
+            self.q_norm = nn.LayerNorm(self.head_dim, eps=config.rms_norm_eps)
+            self.k_norm = nn.LayerNorm(self.head_dim, eps=config.rms_norm_eps)
+        elif qk_norm_type == "rmsnorm":
+            self.q_norm = RMSNorm(
+                normalized_shape=self.head_dim,
+                eps=config.rms_norm_eps,
+                elementwise_affine=False,
+            )
+            self.k_norm = RMSNorm(
+                normalized_shape=self.head_dim,
+                eps=config.rms_norm_eps,
+                elementwise_affine=False,
+            )
+        else:
+            raise ValueError(f"Unsupported qk_norm type: {config.qk_norm}")
 
     def forward(
         self,
         hidden_states: HiddenState,
         *,
+        position_embeddings: PositionEmbs | None = None,
         attention_mask: AttentionMask | None = None,
         encoder_hidden_states: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -171,7 +199,13 @@ class Attention(nn.Module):
         q = einops.rearrange(
             q, "b n_q (h d) -> b h n_q d", h=self.num_att_heads, d=self.head_dim
         )
-        kv_hidden_states = encoder_hidden_states if encoder_hidden_states is not None else hidden_states
+        if self.q_norm is not None:
+            q = self.q_norm(q)
+        if encoder_hidden_states is not None:
+            kv_hidden_states = encoder_hidden_states
+        else:
+            kv_hidden_states = hidden_states
+        # kv_hidden_states = encoder_hidden_states or hidden_states
         k = self.k_proj(kv_hidden_states)
         k = einops.rearrange(
             k,
@@ -179,6 +213,8 @@ class Attention(nn.Module):
             h_kv=self.num_kv_heads,
             d=self.head_dim,
         )
+        if self.k_norm is not None:
+            k = self.k_norm(k)
         v = self.v_proj(kv_hidden_states)
         v = einops.rearrange(
             v,
@@ -189,13 +225,17 @@ class Attention(nn.Module):
         # shape: q: (batch, num_heads, seq, head_dim)
         # shape: k, v: (batch, num_kv_heads, seq, head_dim)
 
-        q_rotate, k_rotate = q, k
+        if position_embeddings is not None:
+            cos, sin = position_embeddings
+            q_rotate, k_rotate = apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1)
+        else:
+            q_rotate, k_rotate = q, k
 
         attn_output = F.scaled_dot_product_attention(
             q_rotate,
             k_rotate,
             v,
-            # attn_mask=attention_mask,
+            attn_mask=attention_mask,
             dropout_p=0.0,
             scale=self.scaling,
             enable_gqa=True,
@@ -239,6 +279,7 @@ class DecoderBlock(nn.Module):
         hidden_states: HiddenState,
         adarms_cond: AdarmsCond,
         *,
+        position_embeddings: PositionEmbs | None = None,
         attention_mask: AttentionMask | None = None,
         encoder_hidden_states: torch.Tensor | None = None,
     ) -> torch.Tensor:
@@ -253,6 +294,7 @@ class DecoderBlock(nn.Module):
             encoder_hidden_states = self.encoder_layernorm(encoder_hidden_states)
         out_att, (k, v) = self.attn.forward(
             pre_att,
+            position_embeddings=position_embeddings,
             attention_mask=attention_mask,
             encoder_hidden_states=encoder_hidden_states,
         )
@@ -278,14 +320,14 @@ class DiTModel(nn.Module):
         super().__init__()
         self.config = config
         self.use_dropout = config.attn_dropout > 0.0 or config.mlp_dropout > 0.0
-        blocks: List[DecoderBlock] = []
-        # = nn.ModuleList(
-        #     [DecoderBlock(config, idx) for idx in range(config.num_hidden_layers)]
-        # )
-        for idx in range(config.num_hidden_layers):
-            blocks.append(DecoderBlock(config, idx * 2))
-            blocks.append(DecoderBlock(config, idx * 2 + 1))
-        self.blocks = nn.ModuleList(blocks)
+        self.blocks: List[DecoderBlock] = nn.ModuleList(
+            [
+                DecoderBlock(config, idx)
+                for idx in range(
+                    config.num_hidden_layers * config.cross_attention_every
+                )
+            ]
+        )
 
         self.norm = RMSNorm(
             normalized_shape=config.hidden_size,
@@ -325,7 +367,6 @@ class DiTModel(nn.Module):
         attention_mask: AttentionMask | None = None,
         past_key_values: List[KVCache] | None = None,
         encoder_hidden_states: List[torch.Tensor] | None = None,
-        # num_kv = num_q + len(past_key_values)
     ) -> (
         Tuple[HiddenState, List[KVCache]]
         | Tuple[HiddenState, List[KVCache], torch.Tensor | None]
@@ -338,17 +379,27 @@ class DiTModel(nn.Module):
             raise ValueError(
                 "attention_mask is expected to have shape (batch, 1, seq, seq_kv)."
             )
+        assert attention_mask.shape[-2] == inputs_embeds.shape[1]
+        encoder_seq_len = encoder_hidden_states[0].shape[1]
+        assert attention_mask.shape[-1] == encoder_seq_len + inputs_embeds.shape[1]
+        attention_mask = attention_mask[..., :encoder_seq_len]
+
+        cos, sin = self.rotary_emb(position_ids, dtype=inputs_embeds.dtype)
 
         hidden_states = inputs_embeds
         kv_cache_list: List[KVCache] = []
         hidden_states_for_dispersive_loss = []
+        cross_every = max(1, self.config.cross_attention_every)
         for i, layer in enumerate(self.blocks):
-            if i % 2 == 1:
-                # cross-attention
-                encoder_hidden_states_this_layer = encoder_hidden_states[i // 2]
+            is_cross = (i % cross_every) == (cross_every - 1)
+            if is_cross:
+                encoder_hidden_this_layer = encoder_hidden_states[i // cross_every]
+                attention_mask_this_layer = attention_mask
+                pos_emb_this_layer = None
             else:
-                # self-attention
-                encoder_hidden_states_this_layer = None
+                encoder_hidden_this_layer = None
+                attention_mask_this_layer = None
+                pos_emb_this_layer = (cos, sin) if self.config.rotary_self_attn else None
             torch.cuda.nvtx.range_push(f"layer_{i}")
             if i in self.config.layers_for_dispersive_loss:
                 hidden_states_for_dispersive_loss.append(hidden_states)
@@ -357,8 +408,9 @@ class DiTModel(nn.Module):
                 layer,
                 hidden_states,
                 adarms_cond,
-                attention_mask=attention_mask,
-                encoder_hidden_states=encoder_hidden_states_this_layer,
+                position_embeddings=pos_emb_this_layer,
+                attention_mask=attention_mask_this_layer,
+                encoder_hidden_states=encoder_hidden_this_layer,
                 preserve_rng_state=self.use_dropout,
             )
             torch.cuda.nvtx.range_pop()

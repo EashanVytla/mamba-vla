@@ -14,7 +14,6 @@ from torch.distributed.fsdp._fully_shard import (
 )
 
 from vla_scratch.policies.base import BasePolicy
-from vla_scratch.policies.modules.action_expert.dit import DiTModel
 from vla_scratch.policies.modules.action_expert.cross_attention_dit import (
     DiTModel as CrossAttentionDiTModel,
 )
@@ -81,13 +80,11 @@ class PiPolicy(BasePolicy):
             self.vlm_bridge = PaligemmaBridge(
                 model_id=config.model_id,
                 vlm_type=config.vlm_type,
-                max_length=config.max_prompt_length,
             )
         elif config.vlm_type == "Qwen3VLForConditionalGeneration":
             self.vlm_bridge = Qwen3VLBridge(
                 model_id=config.model_id,
                 vlm_type=config.vlm_type,
-                max_length=config.max_prompt_length,
             )
         else:
             raise NotImplementedError(
@@ -121,24 +118,21 @@ class PiPolicy(BasePolicy):
                 not config.expert_only_use_register
             ), "expert_only_use_register must be False when num_obs_registers is 0."
         action_expert_config = config.action_expert_cfg
-        if action_expert_config.head_dim != text_head_dim:
-            print(
-                f"Warning: Overriding DiT head_dim {action_expert_config.head_dim} "
-                f"to match VLM text head_dim {text_head_dim}."
-            )
-            action_expert_config.head_dim = text_head_dim
-        if action_expert_config.num_key_value_heads != text_num_kv_heads:
-            print(
-                f"Warning: Overriding DiT num_key_value_heads {action_expert_config.num_key_value_heads} "
-                f"to match VLM text num_key_value_heads {text_num_kv_heads}."
-            )
-            action_expert_config.num_key_value_heads = text_num_kv_heads
+        # if action_expert_config.head_dim != text_head_dim:
+        #     print(
+        #         f"Warning: Overriding DiT head_dim {action_expert_config.head_dim} "
+        #         f"to match VLM text head_dim {text_head_dim}."
+        #     )
+        #     action_expert_config.head_dim = text_head_dim
+        # if action_expert_config.num_key_value_heads != text_num_kv_heads:
+        #     print(
+        #         f"Warning: Overriding DiT num_key_value_heads {action_expert_config.num_key_value_heads} "
+        #         f"to match VLM text num_key_value_heads {text_num_kv_heads}."
+        #     )
+        #     action_expert_config.num_key_value_heads = text_num_kv_heads
 
         start_time = time.time()
-        if not config.interleave_cross_attention:
-            self.action_expert = DiTModel(config=action_expert_config)
-        else:
-            self.action_expert = CrossAttentionDiTModel(config=action_expert_config)
+        self.action_expert = CrossAttentionDiTModel(config=action_expert_config)
         end_time = time.time()
         self.action_expert_layers = action_expert_config.num_hidden_layers
         print(f"Action expert initialized in {end_time - start_time:.2f} seconds.")
@@ -243,11 +237,12 @@ class PiPolicy(BasePolicy):
         # only retain last N layers for action expert
         kv_cache_list = vlm_outputs.kv_cache_list[-self.action_expert_layers :]
         hidden_states_list = vlm_outputs.hidden_state_list[-self.action_expert_layers :]
+        prefix_pad_masks = vlm_outputs.prefix_pad_masks
         # only use the last num_obs_registers tokens from the prefix for the expert
         if self.config.expert_only_use_register:
             torch.cuda.nvtx.range_push("select_obs_registers")
             num_registers = self.config.num_obs_registers
-            prefix_pad_masks = vlm_outputs.prefix_pad_masks[:, -num_registers:]
+            prefix_pad_masks = prefix_pad_masks[:, -num_registers:]
             kv_cache_list = [
                 (
                     kv[0][..., -num_registers:, :],

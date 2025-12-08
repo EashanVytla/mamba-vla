@@ -77,8 +77,7 @@ class TrainConfig:
     num_workers: int = 8
     prefetch_factor: int = 6
     split_seed: int = 42
-    # epoch_iterator: str = "prefetch"  # "prefetch" or "eager"
-    epoch_iterator: str = "eager"  # "prefetch" or "eager"
+    epoch_iterator: str = "prefetch"  # "prefetch" or "eager"
     # optimization
     epochs: int = 20
     batch_size: int = 16
@@ -401,8 +400,8 @@ def main(cfg: DictConfig) -> None:
                 if global_rank == 0:
                     run.log(log_dict)
 
-            if (epoch + 1) % train_cfg.save_interval == 0:
-                save_checkpoint(model, optimizer, global_rank, f"checkpoint_{epoch+1}")
+        if (epoch + 1) % train_cfg.save_interval == 0:
+            save_checkpoint(model, optimizer, global_rank, f"checkpoint_{epoch+1}")
 
     epoch_iterator.finalize()
     dist.destroy_process_group()
