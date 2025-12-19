@@ -41,13 +41,7 @@ class PaligemmaProcessor(TransformFn):
         self.max_length = max_length
 
     def compute(self, sample: "DataSample") -> "DataSample":
-        # images = F.interpolate(
-        #     sample.observation.images.type(torch.float32),
-        #     size=self.target_size,
-        #     mode="bilinear",
-        #     align_corners=False,
-        # ).type(torch.uint8)
-        # images = (images / 255.0 - 0.5) / 0.5
+        # TODO: change to apply chat template
         images = sample.observation.images.type(torch.uint8)
         pixel_values = self.processor.image_processor(images, return_tensors="pt")["pixel_values"]
 

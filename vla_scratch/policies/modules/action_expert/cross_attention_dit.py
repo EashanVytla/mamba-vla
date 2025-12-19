@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Tuple, Callable, Optional
+from typing import List, Tuple, Callable, Optional, Dict
 import einops
 
 import torch
@@ -365,10 +365,7 @@ class DiTModel(nn.Module):
         adarms_cond: AdarmsCond,
         attention_mask: AttentionMask,
         encoder_hidden_states: List[torch.Tensor],
-    ) -> (
-        Tuple[HiddenState, torch.Tensor | None]
-    ):
-        # We currently ignore past_key_values as caching is not implemented.
+    ) -> Tuple[torch.Tensor, HiddenState, Dict]:
         if inputs_embeds is None:
             raise ValueError("inputs_embeds must be provided.")
 
@@ -395,7 +392,9 @@ class DiTModel(nn.Module):
             else:
                 encoder_hidden_this_layer = None
                 attention_mask_this_layer = None
-                pos_emb_this_layer = (cos, sin) if self.config.rotary_self_attn else None
+                pos_emb_this_layer = (
+                    (cos, sin) if self.config.rotary_self_attn else None
+                )
             torch.cuda.nvtx.range_push(f"layer_{i}")
             if i in self.config.layers_for_dispersive_loss:
                 hidden_states_for_dispersive_loss.append(hidden_states)
@@ -410,7 +409,6 @@ class DiTModel(nn.Module):
                 preserve_rng_state=self.use_dropout,
             )
             torch.cuda.nvtx.range_pop()
-
 
         hidden_states = self.norm(hidden_states)
 

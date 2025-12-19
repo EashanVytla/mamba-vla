@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import List, Tuple, TYPE_CHECKING, Optional, Dict
+from typing import Tuple, TYPE_CHECKING, Dict
 
 import einops
 import jaxtyping as at
@@ -34,26 +34,18 @@ from vla_scratch.policies.utils.transformers import (
     make_att_2d_masks,
     sample_noise,
 )
-from vla_scratch.policies.modules.vlm_bridge.data_types import VLMOutputs
 
 if TYPE_CHECKING:
+    from vla_scratch.policies.modules.vlm_bridge.data_types import VLMOutputs
     from vla_scratch.policies.pi.config import PiConfig
-    from vla_scratch.policies.utils.data_types import (
-        HiddenState,
-        KVCache,
-        PrefixPadMask,
-    )
     from vla_scratch.transforms.data_types import Observation, DataSample
 
 
 from tensordict import TensorClass
 
 
-class EncodingOutput(TensorClass):
-    last_hidden_state: at.Float[torch.Tensor, "*b seq_len hidden"]
+class SuffixInput(TensorClass):
     prefix_pad_masks: at.Bool[torch.Tensor, "*b seq_len"]
-    key_states: at.Float[torch.Tensor, "*b n_layer n_head seq_len head_dim"]
-    value_states: at.Float[torch.Tensor, "*b n_layer n_head seq_len head_dim"]
     hidden_state_list: at.Float[torch.Tensor, "*b n_layer seq_len hidden"]
 
 
@@ -203,7 +195,7 @@ class PiPolicy(BasePolicy):
 
     def encode_prefix(
         self, observation: "Observation"
-    ) -> Tuple[torch.Tensor, EncodingOutput, Dict]:
+    ) -> Tuple[torch.Tensor, "VLMOutputs", Dict]:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
         # Prepare extra observation register tokens if configured
         extra_embs = None
@@ -222,49 +214,38 @@ class PiPolicy(BasePolicy):
             extra_pad_masks=extra_pad,
             extra_att_masks=extra_att,
         )
+        return ce_loss, vlm_outputs, log_dict
 
+    def construct_suffix_input(self, vlm_outputs: "VLMOutputs") -> SuffixInput:
+        """Construct SuffixInput from VLMOutputs for caching purposes."""
         # only retain last N layers for action expert
-        action_expert_layers = self.config.action_expert_cfg.num_hidden_layers
-        kv_cache_list = vlm_outputs.kv_cache_list[-action_expert_layers:]
-        hidden_states_list = vlm_outputs.hidden_state_list[-action_expert_layers:]
         prefix_pad_masks = vlm_outputs.prefix_pad_masks
+        action_expert_layers = self.config.action_expert_cfg.num_hidden_layers
+        hidden_state_list = vlm_outputs.hidden_state_list[:, -action_expert_layers:]
         # only use the last num_obs_registers tokens from the prefix for the expert
         if self.config.expert_only_use_register:
             torch.cuda.nvtx.range_push("select_obs_registers")
             num_registers = self.config.num_obs_registers
             prefix_pad_masks = prefix_pad_masks[:, -num_registers:]
-            kv_cache_list = [
-                (
-                    kv[0][..., -num_registers:, :],
-                    kv[1][..., -num_registers:, :],
-                )
-                for kv in kv_cache_list
-            ]
-            hidden_states_list = [h[:, -num_registers:, :] for h in hidden_states_list]
+            hidden_state_list = hidden_state_list[:, :, -num_registers:, :]
             torch.cuda.nvtx.range_pop()
 
-        key_states = torch.stack([kv[0] for kv in kv_cache_list], dim=1)
-        value_states = torch.stack([kv[1] for kv in kv_cache_list], dim=1)
-        hidden_states = torch.stack(hidden_states_list, dim=1)
-        encoding_output = EncodingOutput(
-            last_hidden_state=vlm_outputs.last_hidden_state,
+        suffix_input = SuffixInput(
             prefix_pad_masks=prefix_pad_masks,
-            key_states=key_states,
-            value_states=value_states,
-            hidden_state_list=hidden_states,
-            batch_size=observation.shape,
+            hidden_state_list=hidden_state_list,
+            batch_size=vlm_outputs.shape,
         )
-        return ce_loss, encoding_output, log_dict
+        return suffix_input
 
     def predict_suffix(
         self,
         state: at.Float[torch.Tensor, "b horizon dim"],
-        encoding_output: EncodingOutput,
+        suffix_input: SuffixInput,
         noisy_actions,
         time,
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict]:
         """Apply one denoising step of `noisy_actions` at a given timestep."""
-        prefix_pad_masks = encoding_output.prefix_pad_masks
+        prefix_pad_masks = suffix_input.prefix_pad_masks
 
         torch.cuda.nvtx.range_push("embed_suffix")
         suffix_embs, suffix_pad_masks, suffix_att_masks, time_emb = self._embed_suffix(
@@ -272,7 +253,6 @@ class PiPolicy(BasePolicy):
         )
         torch.cuda.nvtx.range_pop()
 
-        # TODO: simply attention mask creation for action expert
         torch.cuda.nvtx.range_push("attention_mask")
         suffix_att_2d_masks = make_att_2d_masks(suffix_pad_masks, suffix_att_masks)
         prefix_pad_mask = einops.repeat(
@@ -287,7 +267,7 @@ class PiPolicy(BasePolicy):
         position_ids = prefix_offsets + torch.cumsum(suffix_pad_masks, dim=1) - 1
         torch.cuda.nvtx.range_pop()
 
-        encoder_hidden_states = encoding_output.hidden_state_list.unbind(dim=1)
+        encoder_hidden_states = suffix_input.hidden_state_list.unbind(dim=1)
         disp_loss, suffix_out, log_dict = self.action_expert.forward(
             inputs_embeds=suffix_embs,
             position_ids=position_ids,
@@ -304,14 +284,15 @@ class PiPolicy(BasePolicy):
         data_sample: "DataSample",
     ) -> Tuple[torch.Tensor, Dict]:
         torch.cuda.nvtx.range_push("Model Encode Prefix")
-        ce_loss, encoding_output, log_dict_prefix = self.encode_prefix(
+        ce_loss, vlm_outputs, log_dict_prefix = self.encode_prefix(
             observation=data_sample.observation
         )
         torch.cuda.nvtx.range_pop()
 
+        suffix_input = self.construct_suffix_input(vlm_outputs)
         if self.config.detach_kv_cache:
             torch.cuda.nvtx.range_push("Detach KV Cache")
-            encoding_output = encoding_output.detach()
+            suffix_input = suffix_input.detach()
             torch.cuda.nvtx.range_pop()
 
         torch.cuda.nvtx.range_push("Noise Sampling")
@@ -326,9 +307,7 @@ class PiPolicy(BasePolicy):
 
         torch.cuda.nvtx.range_push("Expand Data Sample")
         data_sample = repeat_batch(data_sample, self.config.num_noise_per_sample)
-        encoding_output = repeat_batch(
-            encoding_output, self.config.num_noise_per_sample
-        )
+        suffix_input = repeat_batch(suffix_input, self.config.num_noise_per_sample)
         torch.cuda.nvtx.range_pop()
 
         torch.cuda.nvtx.range_push("Apply Noise")
@@ -341,7 +320,7 @@ class PiPolicy(BasePolicy):
         torch.cuda.nvtx.range_push("Model Predict Suffix")
         disp_loss, v_t, log_dict_suffix = self.predict_suffix(
             state=data_sample.observation.state,
-            encoding_output=encoding_output,
+            suffix_input=suffix_input,
             noisy_actions=noisy_actions,
             time=timestep,
         )
@@ -366,16 +345,8 @@ class PiPolicy(BasePolicy):
         self, observation: "Observation", num_steps=10
     ) -> at.Float[torch.Tensor, "*batch_size chunk_size action_dim"]:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
-        _, encoding_output, log_dict = self.encode_prefix(observation)
-        prefix_pad_masks = encoding_output.prefix_pad_masks
-        prefix_key_values = [
-            (
-                encoding_output.key_states[:, i, :, :, :],
-                encoding_output.value_states[:, i, :, :, :],
-            )
-            for i in range(encoding_output.key_states.shape[1])
-        ]
-        encoder_hidden_states = encoding_output.hidden_state_list.unbind(dim=1)
+        _, vlm_output, log_dict = self.encode_prefix(observation)
+        suffix_input = self.construct_suffix_input(vlm_output)
 
         bsize = observation.shape[0]
         device = observation.device
@@ -393,10 +364,7 @@ class PiPolicy(BasePolicy):
         while time_float >= dt_float / 2:
             _, v_t, _ = self.predict_suffix(
                 observation.state,
-                encoding_output=encoding_output,
-                # prefix_pad_masks,
-                # prefix_key_values,
-                # encoder_hidden_states,
+                suffix_input=suffix_input,
                 noisy_actions=x_t,
                 time=time.expand(bsize),
             )

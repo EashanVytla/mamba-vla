@@ -214,12 +214,17 @@ class Qwen3VLBridge(VLMBridge):
         )
         ce_loss = ce_loss / (target_ids != TARGET_IGNORE_ID).sum().clamp(min=1)
 
+        key_states = torch.stack([k for k, v in kv_cache_list], dim=1)
+        value_states = torch.stack([v for k, v in kv_cache_list], dim=1)
+        hidden_state_list = torch.stack(encoder_hidden_states_list, dim=1)
+
         # construct VLMOutputs
         vlm_outputs = VLMOutputs(
             last_hidden_state=hidden_states,
             prefix_pad_masks=prefix_pad_masks,
-            hidden_state_list=tuple(encoder_hidden_states_list),
-            kv_cache_list=tuple(kv_cache_list),
+            key_states=key_states,
+            value_states=value_states,
+            hidden_state_list=hidden_state_list,
         )
         # mean along seq dim
         padding_ratio = policy_td.attention_mask.float().mean(dim=-1)
