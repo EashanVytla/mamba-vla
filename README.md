@@ -1,7 +1,14 @@
-# VLA-Scratch: a Fully Modular, High-Performance, Transparent Codebase For Vision-Language-Action Models
+<div align="left">
+  <h2>
+  VLA-Scratch: 
+  <!-- <br/> -->
+  a Fully Modular, High-Performance, Transparent Stack<br/>
+  For Vision-Language-Action Models
+  </h2>
+</div>
 <!-- add a huggingface badge, a twitter badge and a github star badge -->
 
-## Key-Features
+## ✨ Key-Features
 
 - **Explicit Data Model for Composable Modules** 
     - `TensorClass` is used to define explicit data boundaries for [dataset](vla_scratch/transforms/data_types.py) and [policy](vla_scratch/policies/utils/data_types.py), making our codebase fully typed and modular.
@@ -17,7 +24,7 @@
     - TODO: example script snippet here.
 
 
-## Codebase Structure
+## 🗂️ Codebase Structure
 
 VLA-Scratch is a modular, high-performance VLA stack built around Hydra configs, TensorClass data models, and reusable training helpers.
 
@@ -30,7 +37,7 @@ VLA-Scratch is a modular, high-performance VLA stack built around Hydra configs,
 - `examples/` — ready-to-run experiment folders demonstrating LIBERO usage and viz workflows.
 - `tests/` — smoke tests and unit tests for policies, transforms, and helpers. -->
 
-## Quickstart
+## 🚀 Quickstart
 
 ```bash
 # Setup virtual environment and install dependencies:
