@@ -2,7 +2,7 @@
   <h2>
   VLA-Scratch: 
   <!-- <br/> -->
-  a Fully Modular, High-Performance, Transparent Stack<br/>
+  a Modular, Performant, Transparent Stack<br/>
   For Vision-Language-Action Models
   </h2>
 </div>
@@ -11,11 +11,10 @@
 ## ✨ Key-Features
 
 - **Explicit Data Model for Composable Modules** 
-    - `TensorClass` is used to define explicit data boundaries for [dataset](vla_scratch/transforms/data_types.py) and [policy](vla_scratch/policies/utils/data_types.py), making our codebase fully typed and modular.
-    - This unified sample schema allows heterogeneous dataset co-training, fast `.to(device)` calls, and clearer contracts between datasets, policies, and transforms.
-    ![alt text](assets/data_model.png)
+    - `TensorClass` is used to define explicit data boundaries between modules, making our codebase fully typed and modular. This allows heterogeneous dataset co-training, and [clearer data flow](vla_scratch/transforms/README.md) between datasets, policies, and transforms.
+    ![data model](assets/data_model.png)
 - **Dedicated Tuning for a First-Class Performance Stack** 
-    - The [Qwen3-VL bridge](vla_scratch/policies/modules/vlm_bridge/qwen/) rewrites the forward path to minimize host-device syncs, making throughput 2x higher.
+    - The [Qwen3-VL bridge](vla_scratch/policies/modules/vlm_bridge/qwen/bridge.py) rewrites the forward path to [minimize host-device syncs](vla_scratch/policies/README.md), making throughput 2x higher.
     - Layer-wise FSDP sharding and gradient checkpointing saves memory up to 2x, making it easier to scale model parameters.
     - TODO: figure here.
 - **Clarity-Focused Hydra Workflow for Seamless Experimentation** 
@@ -26,9 +25,9 @@
 
 ## 🗂️ Codebase Structure
 
-VLA-Scratch is a modular, high-performance VLA stack built around Hydra configs, TensorClass data models, and reusable training helpers.
+VLA-Scratch is a fully modular, high-performance VLA stack built around Hydra configs, TensorClass data models, and reusable training helpers.
 
-- `vla_scratch/transforms/` — dataset/policy transforms plus TensorClass definitions for observations/actions: [Documentation →](vla_scratch/transforms/README.md).
+- `vla_scratch/transforms/` — dataset/policy transforms and TensorClass definitions for observations/actions: [Documentation →](vla_scratch/transforms/README.md).
 - `vla_scratch/datasets/` — dataset configs, loaders, and transforms registered under `data=`: [Documentation →](vla_scratch/datasets/README.md).
 - `vla_scratch/policies/` — policy interfaces, bridges, and action heads registered under `policy=`: [Documentation →](vla_scratch/policies/README.md).
 - `scripts/` — training/eval/serving entry points with shared Hydra grammar: [Documentation →](scripts/README.md).
