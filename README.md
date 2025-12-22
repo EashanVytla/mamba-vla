@@ -27,10 +27,12 @@
 
 VLA-Scratch is a fully modular, high-performance VLA stack built around Hydra configs, TensorClass data models, and reusable training helpers.
 
-- `vla_scratch/transforms/` — dataset/policy transforms and TensorClass definitions for observations/actions: [Documentation →](vla_scratch/transforms/README.md).
-- `vla_scratch/datasets/` — dataset configs, loaders, and transforms registered under `data=`: [Documentation →](vla_scratch/datasets/README.md).
-- `vla_scratch/policies/` — policy interfaces, bridges, and action heads registered under `policy=`: [Documentation →](vla_scratch/policies/README.md).
-- `scripts/` — training/eval/serving entry points with shared Hydra grammar: [Documentation →](scripts/README.md).
+| Path | Description | Docs |
+| --- | --- | --- |
+| `vla_scratch/transforms/` | Data transforms and TensorClass models | [Documentation →](vla_scratch/transforms/README.md) |
+| `vla_scratch/datasets/` | Dataset loaders and transforms | [Documentation →](vla_scratch/datasets/README.md) |
+| `vla_scratch/policies/` | Policy interfaces, bridges, and action heads | [Documentation →](vla_scratch/policies/README.md) |
+| `scripts/` | Training/eval/serving scripts with shared Hydra grammar | [Documentation →](scripts/README.md) |
 <!-- - `vla_scratch/helpers/` — repo-aware data + training helpers (prefetch dataloaders, FSDP setup, normalization I/O).
 - `vla_scratch/utils/` — standalone utilities (config discovery, checkpointing, filesystem paths) that avoid repo-level imports.
 - `examples/` — ready-to-run experiment folders demonstrating LIBERO usage and viz workflows.
