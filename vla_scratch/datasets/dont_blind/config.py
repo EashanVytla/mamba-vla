@@ -1,10 +1,10 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from hydra.core.config_store import ConfigStore
 
-from vla_scratch.datasets.config import DataConfig
+from vla_scratch.datasets.config import DataConfig, EvalDataCfg, EvalDatasetCfg
 
 
 @dataclass
@@ -16,10 +16,12 @@ class DontBlindConfig(DataConfig):
     _target_: str = "vla_scratch.datasets.dont_blind.lerobot_dataset.DontBlindDataset"
     repo_id: str = "elijahgalahad/blindvla_1k_lerobot"
     root_path: Optional[Path] = None
-    episodes: Optional[List[int]] = None
+
+    bbox_only: bool = False
+
+    episodes: Optional[Any] = None
     # Regex filters applied to info.json splits keys (e.g., \".*banana.*\")
     splits: List[str] = field(default_factory=lambda: ["train"])
-    # No action transforms are applied for this dataset; keep raw actions.
 
     norm_stats_path: Optional[Path] = "normalization_stats/dont_blind/lerobot_norm_stats-horizon_{data.action_horizon}-history_{data.state_history}.npz"
 
@@ -63,3 +65,29 @@ cs.store(name="dont_blind_8_8_train", node=dont_blind_8_8_objects_config_train, 
 cs.store(name="dont_blind_8_8_test", node=dont_blind_8_8_objects_config_test, group="data")
 cs.store(name="dont_blind_12_4_train", node=dont_blind_12_4_objects_config_train, group="data")
 cs.store(name="dont_blind_12_4_test", node=dont_blind_12_4_objects_config_test, group="data")
+
+dont_blind_eval_cfg = EvalDataCfg(
+    datasets={
+        "action_train": EvalDatasetCfg(
+            data=dont_blind_8_8_objects_config_train,
+            eval_fraction=0.05,
+            eval_type="sample_mse",
+        ),
+        "action_test": EvalDatasetCfg(
+            data=dont_blind_8_8_objects_config_test,
+            eval_fraction=0.05,
+            eval_type="sample_mse",
+        ),
+        "generation_train": EvalDatasetCfg(
+            data=replace(dont_blind_8_8_objects_config_train, bbox_only=True),
+            eval_fraction=0.1,
+            eval_type="generation",
+        ),
+        "generation_test": EvalDatasetCfg(
+            data=replace(dont_blind_8_8_objects_config_test, bbox_only=True),
+            eval_fraction=0.1,
+            eval_type="generation",
+        ),
+    }
+)
+cs.store(name="dont_blind_8_8_eval", node=dont_blind_eval_cfg, group="eval_data")

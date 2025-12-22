@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Iterator, List, Optional
+from collections.abc import MutableMapping
 
 from vla_scratch.utils.config import locate_class
 
@@ -21,3 +22,37 @@ class DataConfig:
     def instantiate(self, *args, **kwargs) -> Any:
         dataset_cls = locate_class(self._target_)
         return dataset_cls(self, *args, **kwargs)
+
+
+@dataclass
+class EvalDatasetCfg:
+    data: DataConfig
+    eval_fraction: float = 1.0
+    eval_type: str = "sample_mse"
+
+
+@dataclass
+class EvalDataCfg(MutableMapping[str, EvalDatasetCfg]):
+    datasets: dict[str, EvalDatasetCfg] = field(default_factory=dict)
+
+    def __getitem__(self, key: str) -> EvalDatasetCfg:
+        return self.datasets[key]
+
+    def __setitem__(self, key: str, value: EvalDatasetCfg) -> None:
+        self.datasets[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del self.datasets[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.datasets)
+
+    def __len__(self) -> int:
+        return len(self.datasets)
+
+    def __bool__(self) -> bool:
+        return bool(self.datasets)
+
+from hydra.core.config_store import ConfigStore
+cs = ConfigStore.instance()
+cs.store(name="none", node=EvalDataCfg(), group="eval_data")

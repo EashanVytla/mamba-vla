@@ -1,6 +1,6 @@
 import re
 import json
-from typing import TYPE_CHECKING, Iterable, List, Set, Tuple
+from typing import TYPE_CHECKING, Iterable, List, Set, Tuple, Union
 
 import torch
 import numpy as np
@@ -51,6 +51,53 @@ def _select_episodes(
     return sorted(selected) if selected else []
 
 
+def _token_to_episodes(token: str) -> List[int]:
+    if "-" in token:
+        start, end = token.split("-", 1)
+        start_i, end_i = int(start), int(end)
+        step = 1 if start_i <= end_i else -1
+        return list(range(start_i, end_i + step, step))
+    if ":" in token:
+        start, end = token.split(":", 1)
+        start_i, end_i = int(start), int(end)
+        step = 1 if start_i <= end_i else -1
+        return list(range(start_i, end_i + step, step))
+    return [int(token)]
+
+
+def _parse_episode_str(value: Union[List[int], str, None]) -> List[int] | None:
+    """
+    Accept explicit episode lists or simple range strings (e.g. "0-128").
+    """
+    if value is None:
+        return None
+    if isinstance(value, Iterable) and not isinstance(value, (str, bytes)):
+        episodes: List[int] = []
+        for entry in value:
+            if isinstance(entry, (str, bytes)):
+                tokens = [tok.strip() for tok in str(entry).split(",") if tok.strip()]
+                if not tokens:
+                    continue
+                for token in tokens:
+                    episodes.extend(_token_to_episodes(token))
+            else:
+                episodes.append(int(entry))
+        return episodes
+
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if cleaned.startswith("[") and cleaned.endswith("]"):
+            cleaned = cleaned[1:-1]
+        tokens = [tok.strip() for tok in cleaned.split(",") if tok.strip()]
+        if not tokens and cleaned:
+            tokens = [cleaned]
+        episodes: List[int] = []
+        for token in tokens:
+            episodes.extend(_token_to_episodes(token))
+        return episodes
+    return None
+
+
 def _load_jsonl(path):
     records = []
     with open(path, "r", encoding="utf-8") as f:
@@ -79,8 +126,9 @@ class DontBlindDataset(torch.utils.data.Dataset):
         meta = LeRobotDatasetMetadata(repo_id=repo_id, root=meta_root)
 
         # If explicit episodes are provided, they take precedence.
-        if config.episodes is not None:
-            episodes = config.episodes
+        episodes_override = _parse_episode_str(config.episodes)
+        if episodes_override is not None:
+            episodes = episodes_override
         else:
             episodes = _select_episodes(meta, config.splits)
 
@@ -93,6 +141,8 @@ class DontBlindDataset(torch.utils.data.Dataset):
                 / fps
             ).tolist(),
         }
+
+        # _prefetch_required_chunks(meta, episodes)
 
         self.dataset = LeRobotDataset(
             repo_id=repo_id,
@@ -111,15 +161,33 @@ class DontBlindDataset(torch.utils.data.Dataset):
             print(f"Loading bounding boxes from {bbox_path}")
             records = _load_jsonl(bbox_path)
             records.sort(key=lambda r: (int(r["episode_index"]), int(r["frame_index"])))
-            self._bbox_records = records
+            self._bbox_records = [
+                r for r in records if (int(r["episode_index"]) in episodes)
+            ]
             for bbox_idx, r in enumerate(records):
                 key = (int(r["episode_index"]), int(r["frame_index"]))
                 self._bbox_idx_map.setdefault(key, bbox_idx)
 
+        if config.bbox_only:
+            print("Filtering dataset to only include frames with bounding boxes.")
+            episode_lengths = [meta.episodes[ep_id]["length"] for ep_id in episodes]
+            episode_start_indices = np.cumsum([0] + episode_lengths)[:-1]
+            self.filtered_indices = [
+                episode_start_indices[episodes.index(int(r["episode_index"]))] + int(r["frame_index"])
+                for r in self._bbox_records
+            ]
+            print(f"Filtered dataset size: {len(self.filtered_indices)}")
+            self.size = len(self.filtered_indices)
+        else:
+            self.filtered_indices = None
+            self.size = len(self.dataset)
+
     def __len__(self):
-        return len(self.dataset)
+        return self.size
 
     def __getitem__(self, idx):
+        if self.filtered_indices is not None:
+            idx = int(self.filtered_indices[idx])
         item = self.dataset[idx]
 
         # Images: single camera, add camera dimension and convert to uint8.
@@ -147,7 +215,7 @@ class DontBlindDataset(torch.utils.data.Dataset):
         else:
             prompt = ""
             answer = ""
-        
+
         processed = {
             PROCESSED_IMAGE_KEY: (img * 255).to(torch.uint8).unsqueeze(0),
             PROCESSED_IMAGE_MASK_KEY: torch.ones((1, 1), dtype=torch.bool),
@@ -158,3 +226,30 @@ class DontBlindDataset(torch.utils.data.Dataset):
             GENERATION_ANSWER_KEY: answer,
         }
         return processed
+
+
+def _prefetch_required_chunks(
+    meta: LeRobotDatasetMetadata,
+    download_videos: bool = True,
+) -> None:
+    chunk_ids: List[int] = sorted({meta.get_episode_chunk(ep_idx) for ep_idx in meta.episodes.keys()})
+    if not chunk_ids:
+        return
+
+    allow_patterns: List[str] = [f"data/chunk-{chunk_id:03d}/*" for chunk_id in chunk_ids]
+    if download_videos and meta.video_keys:
+        for chunk_id in chunk_ids:
+            for video_key in meta.video_keys:
+                allow_patterns.append(f"videos/chunk-{chunk_id:03d}/{video_key}/*")
+
+    from huggingface_hub import snapshot_download, get_token
+    print(f"Prefetching with token: {get_token()}")
+    snapshot_download(
+        repo_id=meta.repo_id,
+        repo_type="dataset",
+        revision=meta.revision,
+        local_dir=meta.root,
+        allow_patterns=allow_patterns,
+        ignore_patterns=None if download_videos else ["videos/"],
+        token=get_token(),
+    )

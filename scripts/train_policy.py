@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 from vla_scratch.policies.base import BasePolicy
 from vla_scratch.policies.config import PolicyConfig
-from vla_scratch.datasets.config import DataConfig
+from vla_scratch.datasets.config import DataConfig, EvalDataCfg
 
 from vla_scratch.helpers.data import (
     EagerEpochIterator,
@@ -35,10 +35,11 @@ from vla_scratch.helpers.data import (
 )
 
 from vla_scratch.helpers.training import (
+    aggregate_tensordict,
     build_param_lr_groups,
     create_dataloaders,
-    aggregate_tensordict,
-    compute_sample_mse,
+    eval_generation,
+    eval_sample_mse,
     log_model_state_sizes,
     print_with_rank,
     setup_dist,
@@ -68,8 +69,9 @@ class TrainConfig:
     defaults: list[Any] = field(
         default_factory=lambda: [
             "_self_",
-            {"policy": "pi"},
+            {"policy": "pi-qwen"},
             {"data": "libero-ipec"},
+            {"eval_data": "none"},
         ]
     )
 
@@ -102,11 +104,13 @@ class TrainConfig:
     log_interval: int = 32
     eval_interval: int = 512
     save_interval: int = 1  # in epochs
-    eval_fraction: float = 0.003
-    eval_num_sample_steps: int = 10
 
     # data
     data: DataConfig = MISSING
+    eval_data: EvalDataCfg = field(default_factory=EvalDataCfg)
+    eval_num_sample_steps: int = 10
+    eval_batch_size: int = 32
+
     # model
     policy: PolicyConfig = MISSING
     checkpoint_path: Optional[str] = None
@@ -168,11 +172,12 @@ def main(cfg: DictConfig) -> None:
     cfg.world_size = world_size
 
     print_with_rank("create dataloaders...")
-    (
-        dataloader,
-        eval_dataloader,
-        subtrain_dataloader,
-    ) = create_dataloaders(train_cfg, world_size, global_rank, add_noise=True)
+    dataloader, eval_loaders = create_dataloaders(
+        train_cfg,
+        world_size,
+        global_rank,
+        add_noise=True,
+    )
 
     try:
         dummy_data, _ = next(iter(dataloader))
@@ -192,6 +197,27 @@ def main(cfg: DictConfig) -> None:
     loss, _ = model.compute_loss(dummy_data)
     loss.backward()
 
+    for key, (eval_dataloader, eval_type) in eval_loaders.items():
+        if eval_type == "sample_mse":
+            eval_metrics = eval_sample_mse(
+                model=model,
+                dataloader=eval_dataloader,
+                device=device,
+                num_sample_steps=train_cfg.eval_num_sample_steps,
+                local_rank=local_rank,
+            )
+        elif eval_type == "generation":
+            eval_metrics = eval_generation(
+                model=model,
+                dataloader=eval_dataloader,
+                device=device,
+                local_rank=local_rank,
+            )
+        else:
+            raise ValueError(
+                f"Unsupported eval_type '{eval_type}' for dataset '{key}'."
+            )
+
     model.initialize_weights()
 
     model.apply_fsdp(
@@ -200,7 +226,7 @@ def main(cfg: DictConfig) -> None:
         output_dtype=torch.float32,
         mesh=mesh,
     )
-    model: FSDPModule | BasePolicy
+    model: "FSDPModule" | BasePolicy
 
     global_batch_size = train_cfg.batch_size * train_cfg.grad_accum_steps * world_size
     lr_cfg = dict(train_cfg.lr)
@@ -313,8 +339,7 @@ def main(cfg: DictConfig) -> None:
         model.train()
         for i in pbar:
             torch.cuda.nvtx.range_push("Zero Grad")
-            if isinstance(model, FSDPModule):
-                model.unshard()
+            model.unshard()
             optimizer.zero_grad(set_to_none=True)
             torch.cuda.nvtx.range_pop()
 
@@ -376,35 +401,39 @@ def main(cfg: DictConfig) -> None:
                 log_dict["perf/fps.total"] = fps
 
                 # log train stats (aggregate deterministically with a single all_reduce)
-                log_td_mean: TensorDict = (
-                    torch.stack(log_tds).mean(dim=0).type(torch.float32)
-                )
+                log_td_mean: TensorDict = torch.stack(log_tds).mean(dim=0)
                 log_tds.clear()
 
-                log_dict.update(aggregate_tensordict(log_td_mean, world_size))
-
-                if global_step % train_cfg.eval_interval == 0:
-                    # No pre-barrier; evaluation collectives below will synchronize
+                if global_step % train_cfg.eval_interval == 0 and len(eval_loaders) > 0:
                     model.eval()
-                    if isinstance(model, FSDPModule):
-                        model.unshard()
-                    for key, eval_dataloader in [
-                        ("eval", eval_dataloader),
-                        ("train", subtrain_dataloader),
-                    ]:
-                        eval_mse = compute_sample_mse(
-                            model=model,
-                            dataloader=eval_dataloader,
-                            device=device,
-                            num_sample_steps=train_cfg.eval_num_sample_steps,
-                            local_rank=local_rank,
-                        )
-                        if world_size > 1:
-                            dist.all_reduce(eval_mse, op=dist.ReduceOp.AVG)
-                        log_dict[f"loss/sample_mse-{key}"] = eval_mse.item()
-                    if isinstance(model, FSDPModule):
-                        model.reshard()
+                    model.unshard()
+                    for key, (eval_dataloader, eval_type) in eval_loaders.items():
+                        if eval_type == "sample_mse":
+                            eval_metrics = eval_sample_mse(
+                                model=model,
+                                dataloader=eval_dataloader,
+                                device=device,
+                                num_sample_steps=train_cfg.eval_num_sample_steps,
+                                local_rank=local_rank,
+                            )
+                        elif eval_type == "generation":
+                            eval_metrics = eval_generation(
+                                model=model,
+                                dataloader=eval_dataloader,
+                                device=device,
+                                local_rank=local_rank,
+                            )
+                        else:
+                            raise ValueError(
+                                f"Unsupported eval_type '{eval_type}' for dataset '{key}'."
+                            )
+
+                        for metric_name in eval_metrics.keys():
+                            log_td_mean[f"eval/{key}/{metric_name}"] = eval_metrics[metric_name]
+                    model.reshard()
                     model.train()
+
+                log_dict.update(aggregate_tensordict(log_td_mean, world_size))
 
                 log_string = "\n".join(
                     [

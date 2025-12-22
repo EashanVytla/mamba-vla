@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 import logging
 import os
-from typing import TYPE_CHECKING, Any, Mapping, Set
+from typing import TYPE_CHECKING, Any, Dict, Mapping, Set, Tuple
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
@@ -14,8 +14,8 @@ from torch.distributed.tensor import DTensor
 from vla_scratch.helpers.data import create_dataset
 from vla_scratch.utils.dataloader import DistributedRankAwareBatchSampler
 
+from tensordict import TensorDict
 if TYPE_CHECKING:
-    from tensordict import TensorDict
     from scripts.train_policy import TrainConfig
     from vla_scratch.policies.base import BasePolicy
     from vla_scratch.transforms.data_types import DataSample
@@ -57,7 +57,9 @@ def setup_dist():
                     (world_size,),
                     mesh_dim_names=("process",),
                 )
-        print(f"Initialized DDP: rank {global_rank}/{world_size}, local rank {local_rank}")
+        print(
+            f"Initialized DDP: rank {global_rank}/{world_size}, local rank {local_rank}"
+        )
     except ValueError:
         local_rank = 0
         global_rank = 0
@@ -127,13 +129,30 @@ def _create_dataloader(
     return DataLoader(dataset, **loader_kwargs)
 
 
+def _subset_dataset(
+    dataset: torch.utils.data.Dataset,
+    fraction: float,
+    *,
+    seed: int,
+) -> torch.utils.data.Dataset:
+    if fraction >= 1.0:
+        return dataset
+    if not (0.0 < fraction <= 1.0):
+        raise ValueError("fraction for eval subset must be within (0, 1].")
+    total_samples = len(dataset)
+    subset_size = max(1, int(total_samples * fraction))
+    generator = torch.Generator().manual_seed(seed)
+    indices = torch.randperm(total_samples, generator=generator)[:subset_size].tolist()
+    return torch.utils.data.Subset(dataset, indices)
+
+
 def create_dataloaders(
     train_cfg: "TrainConfig",
     world_size: int,
     global_rank: int,
     *,
     add_noise: bool = False,
-) -> tuple[DataLoader, DataLoader, DataLoader]:
+) -> tuple[DataLoader, dict[str, tuple[DataLoader, str]]]:
     train_cfg.data.action_horizon = train_cfg.policy.action_horizon
     train_cfg.data.state_history = train_cfg.policy.state_history
 
@@ -143,57 +162,42 @@ def create_dataloaders(
         add_noise=add_noise,
     )
 
-    if not (0.0 < train_cfg.eval_fraction < 1.0):
-        raise ValueError("eval_fraction must be within (0, 1).")
-
-    total_samples = len(full_dataset)
-    eval_size = max(1, int(total_samples * train_cfg.eval_fraction))
-    train_size = total_samples - eval_size
-
-    split_generator = torch.Generator().manual_seed(train_cfg.split_seed)
-    train_dataset, eval_dataset = torch.utils.data.random_split(
-        full_dataset,
-        [train_size, eval_size],
-        generator=split_generator,
-    )
-    train_size = len(train_dataset)
-
-    subtrain_size = max(1, int(train_size * train_cfg.eval_fraction))
-    subtrain_generator = torch.Generator().manual_seed(train_cfg.split_seed + 1)
-    subtrain_indices = torch.randperm(train_size, generator=subtrain_generator)[
-        :subtrain_size
-    ].tolist()
-    subtrain_dataset = torch.utils.data.Subset(train_dataset, subtrain_indices)
-
     dataloader = _create_dataloader(
-        dataset=train_dataset,
+        dataset=full_dataset,
         shuffle=True,
         batch_size=train_cfg.batch_size,
         train_cfg=train_cfg,
         world_size=world_size,
         global_rank=global_rank,
     )
-    eval_dataloader = _create_dataloader(
-        dataset=eval_dataset,
-        shuffle=False,
-        batch_size=32,
-        train_cfg=train_cfg,
-        world_size=world_size,
-        global_rank=global_rank,
-    )
-    subtrain_dataloader = _create_dataloader(
-        dataset=subtrain_dataset,
-        shuffle=False,
-        batch_size=32,
-        train_cfg=train_cfg,
-        world_size=world_size,
-        global_rank=global_rank,
-    )
+
+    eval_loaders: Dict[str, Tuple[DataLoader, str]] = {}
+
+    extra_eval_seed = train_cfg.split_seed
+    for idx, (name, eval_cfg) in enumerate(train_cfg.eval_data.items()):
+        data_cfg = eval_cfg.data
+        data_cfg.action_horizon = train_cfg.policy.action_horizon
+        data_cfg.state_history = train_cfg.policy.state_history
+
+        dataset = create_dataset(
+            data_cfg,
+            train_cfg.policy,
+            add_noise=False,
+        )
+        dataset = _subset_dataset(dataset, eval_cfg.eval_fraction, seed=extra_eval_seed + idx)
+        eval_loader = _create_dataloader(
+            dataset=dataset,
+            shuffle=False,
+            batch_size=train_cfg.eval_batch_size,
+            train_cfg=train_cfg,
+            world_size=world_size,
+            global_rank=global_rank,
+        )
+        eval_loaders[name] = (eval_loader, eval_cfg.eval_type)
 
     return (
         dataloader,
-        eval_dataloader,
-        subtrain_dataloader,
+        eval_loaders,
     )
 
 
@@ -243,14 +247,15 @@ def build_param_lr_groups(
 
 
 @torch.inference_mode()
-def compute_sample_mse(
+def eval_sample_mse(
     model: "BasePolicy",
     dataloader: DataLoader,
     device: torch.device,
-    num_sample_steps: int,
     local_rank: int,
-) -> torch.Tensor:
-    squared_errors = []
+    *,
+    num_sample_steps: int,
+) -> TensorDict:
+    eval_loss_tds = []
 
     pbar = tqdm(
         range(len(dataloader)),
@@ -270,11 +275,45 @@ def compute_sample_mse(
         squared_error = F.mse_loss(
             predicted_actions,
             target_actions,
-            reduction="none",
+            reduction="mean",
         )
-        squared_errors.append(squared_error.mean())
+        eval_loss_td = TensorDict({"sample_mse": squared_error})
+        eval_loss_tds.append(eval_loss_td)
 
-    return torch.stack(squared_errors).mean()
+    return torch.stack(eval_loss_tds).mean()
+
+
+@torch.inference_mode()
+def eval_generation(
+    model: "BasePolicy",
+    dataloader: DataLoader,
+    device: torch.device,
+    local_rank: int,
+) -> TensorDict:
+    eval_loss_tds = []
+
+    pbar = tqdm(
+        range(len(dataloader)),
+        desc="Evaluating generation",
+        disable=local_rank != 0,
+    )
+    dataloader_iter = iter(dataloader)
+    for _ in pbar:
+        batch, _ = next(dataloader_iter)
+        batch: "DataSample" = batch.to(device)
+        _, _, log_dict = model.encode_prefix(
+            observation=batch.observation,
+        )
+        eval_loss_dict = {
+            key.replace("loss/", ""): value
+            for key, value in log_dict.items()
+            if key.startswith("loss/")
+        }
+        eval_loss_tds.append(TensorDict(eval_loss_dict))
+
+    return torch.stack(eval_loss_tds).mean()
+
+
 def aggregate_tensordict(td: "TensorDict", world_size: int) -> dict[str, float]:
     flat_td = td.flatten_keys(separator="/")
     if world_size <= 1:
@@ -372,12 +411,11 @@ def log_model_state_sizes(
     buffers = list(policy.buffers())
     grads = [p.grad for p in params if p.grad is not None]
 
-
     param_bytes_local, param_bytes_global, param_dtype_bytes = _accumulate_tensor_stats(
         params
     )
-    buffer_bytes_local, buffer_bytes_global, buffer_dtype_bytes = _accumulate_tensor_stats(
-        buffers
+    buffer_bytes_local, buffer_bytes_global, buffer_dtype_bytes = (
+        _accumulate_tensor_stats(buffers)
     )
     grad_bytes_local, grad_bytes_global, grad_dtype_bytes = _accumulate_tensor_stats(
         grads
@@ -394,16 +432,9 @@ def log_model_state_sizes(
         return num_bytes / (1024**2)
 
     total_bytes_local = (
-        param_bytes_local
-        + buffer_bytes_local
-        + grad_bytes_local
-        + optim_bytes_local
+        param_bytes_local + buffer_bytes_local + grad_bytes_local + optim_bytes_local
     )
-    total_bytes_global = (
-        param_bytes_global
-        + buffer_bytes_global
-        + grad_bytes_global
-    )
+    total_bytes_global = param_bytes_global + buffer_bytes_global + grad_bytes_global
     # global means full model, not sum over all ranks
     msg = (
         "Tensor sizes (MB): "
