@@ -170,7 +170,8 @@ class PiPolicy(BasePolicy):
         if self.config.suffix_add_pos_emb:
             nn.init.normal_(self.position_embedding_state, mean=0.0, std=self.config.suffix_pos_emb_init_gain)
             nn.init.normal_(self.position_embedding_action, mean=0.0, std=self.config.suffix_pos_emb_init_gain)
-        nn.init.normal_(self.obs_registers, mean=0.0, std=self.config.obs_register_init_gain)
+        if self.use_obs_register:
+            nn.init.normal_(self.obs_registers, mean=0.0, std=self.config.obs_register_init_gain)
         self.action_expert.initialize_weights()
 
     def apply_fsdp(self, param_type, reduce_type, output_dtype, mesh):

@@ -317,6 +317,7 @@ def main(cfg: DictConfig) -> None:
         name: epoch_iterator_cls(dataloader=loader, num_epochs=train_cfg.epochs)
         for name, loader in train_loaders.items()
     }
+    torch.cuda.empty_cache()
     for epoch in range(train_cfg.epochs):
         data_loader_iters = {
             name: next(epoch_iterator)

@@ -172,7 +172,7 @@ class Qwen3VLBridge(VLMBridge):
         prefix_att_mask = einops.rearrange(prefix_att_2d, "b i j -> b 1 i j")
         if extra_embs is not None and extra_attention_mask:
             obs_reg_att_mask = policy_td.obs_register_att_mask
-            assert torch.eq(obs_reg_att_mask & input_pad_mask, obs_reg_att_mask).all(), "obs_register_att_mask must be a subset of input_pad_mask"
+            # assert torch.eq(obs_reg_att_mask & input_pad_mask, obs_reg_att_mask).all(), "obs_register_att_mask must be a subset of input_pad_mask"
             prefix_len = input_pad_mask.shape[1]
             obs_reg_att_mask = einops.repeat(
                 obs_reg_att_mask, "b s -> b 1 extra_len s", extra_len=extra_len

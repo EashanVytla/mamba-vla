@@ -9,7 +9,7 @@ Evaluate a policy on a dataset using Hydra configs (mirrors train_policy grammar
 """
 
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, cast
+from typing import Any, List, Optional, cast, TYPE_CHECKING
 import os
 from tqdm import tqdm
 
@@ -24,12 +24,16 @@ from torch.utils.data import DataLoader, Subset
 from vla_scratch.datasets.config import DataConfig
 from vla_scratch.helpers.data import create_dataset
 from vla_scratch.policies.config import create_policy, PolicyConfig
-from vla_scratch.transforms.data_types import DataSample
 from vla_scratch.utils.checkpoint import (
     find_latest_checkpoint,
     load_model_from_checkpoint,
 )
 from vla_scratch.utils.config import merge_cfg_from_checkpoint
+from vla_scratch.helpers.training import eval_sample_mse
+
+if TYPE_CHECKING:
+    from vla_scratch.transforms.data_types import DataSample
+    from vla_scratch.policies.base import BasePolicy
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -54,24 +58,6 @@ class EvalConfig:
 cs = ConfigStore.instance()
 cs.store(name="eval", node=EvalConfig())
 
-
-@torch.inference_mode()
-def compute_mse(
-    model: torch.nn.Module,
-    dataloader: DataLoader,
-    device: torch.device,
-    num_sample_steps: int,
-) -> float:
-    errs: List[torch.Tensor] = []
-    it = iter(dataloader)
-    for _ in tqdm(range(len(dataloader))):
-        batch, _ = next(it)
-        batch: DataSample = batch.to(device)
-        pred = model.sample_actions(batch.observation, num_steps=num_sample_steps)
-        target = batch.action_chunk.actions
-        se = F.mse_loss(pred, target, reduction="none").mean()
-        errs.append(se)
-    return float(torch.stack(errs).mean().item())
 
 
 @hydra.main(config_name="eval", version_base=None)
@@ -102,14 +88,16 @@ def main(cfg: DictConfig) -> None:
     dataset = create_dataset(data_cfg, policy_cfg)
 
     # Infer dims from one sample
-    sample0, _ = dataset[0]
+    sample0: "DataSample" = dataset[0][0].unsqueeze(0)
     policy_cfg.state_dim = int(sample0.observation.state.shape[-1])
     policy_cfg.action_dim = int(sample0.action_chunk.actions.shape[-1])
 
     # Model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     with torch.device(device):
-        model = create_policy(policy_cfg)
+        model: "BasePolicy" = create_policy(policy_cfg)
+    model.compute_loss(sample0.to(device))
+    model = model.bfloat16()
 
     if eval_cfg.checkpoint_path is not None:
         ckpt = find_latest_checkpoint(eval_cfg.checkpoint_path)
@@ -138,7 +126,7 @@ def main(cfg: DictConfig) -> None:
     )
 
     # Evaluate MSE
-    mse = compute_mse(model, loader, device, num_sample_steps=int(eval_cfg.num_steps))
+    mse = eval_sample_mse(model, loader, device, num_sample_steps=int(eval_cfg.num_steps), local_rank=0)
     print(f"Eval MSE over {num} samples (batch={eval_cfg.batch_size}, steps={eval_cfg.num_steps}): {mse:.6f}")
 
 
