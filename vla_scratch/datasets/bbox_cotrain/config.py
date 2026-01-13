@@ -20,7 +20,6 @@ class CoTrainConfig(DataConfig):
     splits: List[str] = field(default_factory=lambda: [".*"])
 
     norm_stats_path: str = "hf:elijahgalahad/norm_stats-bbox-cotrain"
-    # norm_stats_path: str = "normalization_stats/bbox_cotrain/lerobot_norm_stats-horizon_24-history_0.npz"
 
 
 train_cotrain_config = CoTrainConfig(repo_id="horipse01/lerobot_merged_restricted")
