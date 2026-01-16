@@ -15,14 +15,18 @@ export PYTHONPATH=$PYTHONPATH:$LIBERO_ROOT
 Start up policy server:
 ```bash
 uv run scripts/serve_policy.py \
-    checkpoint_path=hf:<checkpoint_name> \
+    checkpoint_path=hf:<checkpoint_id> \
     data=libero-spatial \
     merge_policy_cfg=true
 ```
 
-Pretrained checkpoints:
-- `elijahgalahad/libero-spatial-paligemma`
-- `elijahgalahad/libero-spatial-qwen`
+Pretrained checkpoints: [wandb runs](https://wandb.ai/elijahgalahad/vla-scratch/reports/Libero-Spatial-Checkpoints--VmlldzoxNTY0OTI2Mw)
+
+| Huggingface Id                                                                                            | Gradient Steps | Run Time |
+|-----------------------------------------------------------------------------------------------------------|----------------|----------|
+| [`elijahgalahad/libero-spatial-qwen`](https://huggingface.co/elijahgalahad/libero-spatial-qwen)           | 10k            | 2h 58m   |
+| [`elijahgalahad/libero-spatial-paligemma`](https://huggingface.co/elijahgalahad/libero-spatial-paligemma) | 10k            | 4h 14m   |
+| [`elijahgalahad/libero-spatial-smolvlm`](https://huggingface.co/elijahgalahad/libero-spatial-smolvlm)     | 10k            | 2h 18m   |
 
 Start simulation and policy client:
 ```bash

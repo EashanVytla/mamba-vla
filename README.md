@@ -1,11 +1,15 @@
-<div align="left">
+<!-- <div align="left">
   <h1>
   VLA-Scratch: 
-  <!-- <br/> -->
   a Modular, Performant, Efficient Stack<br/>
   For Vision-Language-Action Models
   </h1>
-</div>
+</div> -->
+# VLA-Scratch: a Modular, Performant, Efficient Stack For Vision-Language-Action Models
+[![PyTorch FSDP2](https://img.shields.io/badge/PyTorch-FSDP2-ee4c2c?logo=pytorch&logoColor=white)](https://docs.pytorch.org/docs/main/distributed.fsdp.fully_shard.html)
+[![PyTorch TensorDict](https://img.shields.io/badge/PyTorch-TensorDict-ee4c2c?logo=pytorch&logoColor=white)](https://pytorch.org/tensordict/)
+[![Qwen3-VL](https://img.shields.io/badge/Qwen3-VL-1d9bf0?logo=github&logoColor=white)](https://github.com/QwenLM/Qwen3-VL)
+[![Checkpoints](https://img.shields.io/badge/Checkpoints-1d9bf0?logo=huggingface&logoColor=white)](https://huggingface.co/collections/elijahgalahad/vla-scratch)
 
 ## 🚀 Quickstart
 
@@ -61,9 +65,9 @@ See [scripts/README.md](scripts/README.md) for more training commands. See [exam
 
 VLA-Scratch is a fully modular, high-performance VLA stack built around TensorClass data models, hierarchical config system, and reusable training helpers.
 
-| Path | Description |
-| --- | --- |
-| [`vla_scratch/transforms/`](vla_scratch/transforms/) | Data transforms and TensorClass models |
-| [`vla_scratch/datasets/`](vla_scratch/datasets/) | Dataset loaders and transforms |
-| [`vla_scratch/policies/`](vla_scratch/policies/) | Policy interfaces, bridges, and action heads |
-| [`scripts/`](scripts/) | Training/eval/serving scripts |
+| Path                                                 | Description                                  |
+|------------------------------------------------------|----------------------------------------------|
+| [`vla_scratch/transforms/`](vla_scratch/transforms/) | Data transforms and TensorClass models       |
+| [`vla_scratch/datasets/`](vla_scratch/datasets/)     | Dataset loaders and transforms               |
+| [`vla_scratch/policies/`](vla_scratch/policies/)     | Policy interfaces, bridges, and action heads |
+| [`scripts/`](scripts/)                               | Training/eval/serving scripts                |
