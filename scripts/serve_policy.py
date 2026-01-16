@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Sequence, cast, TYPE_CHECKING
 from setproctitle import setproctitle
 
 import art
+import emoji
 import torch
 
 import hydra
@@ -178,18 +179,16 @@ def main(cfg: DictConfig) -> None:
             serve_cfg.data.input_transforms[i] = spec
 
     dataset = _initialize_policy_dims(serve_cfg.data, serve_cfg.policy)
-    print("Initializing model...")
     with torch.device(device):
         model = create_policy(serve_cfg.policy)
-    print("Model initialized.")
 
     # Load latest checkpoint
     if (ckpt := serve_cfg.checkpoint_path) is not None:
-        print(f"Loading checkpoint: {ckpt}")
+        print(emoji.emojize(":package: Loading checkpoint..."))
         missing, unexpected = load_model_from_checkpoint(
             model, ckpt, device, strict=False
         )
-        print("Checkpoint loaded.")
+        print(emoji.emojize(":package: Checkpoint loaded."))
         if missing:
             logger.warning("Missing keys when loading checkpoint: %s", missing)
         if unexpected:
@@ -215,27 +214,25 @@ def main(cfg: DictConfig) -> None:
         inference_steps=serve_cfg.inference_steps,
     )
 
-    metadata = {
-        "policy": serve_cfg.policy._target_.split(".")[-1],
-        "device": str(device),
-    }
-
     # Warmup once to trigger initialization
     warmup = True
     # warmup = False
     if warmup:
+        print(emoji.emojize(":fire: Warmup pass..."))
         observation_in = dataset.base_dataset[0]
         policy.infer(observation_in)
 
     policy.reset()
     server = ZmqPolicyServer(
-        host=serve_cfg.host, port=serve_cfg.port, metadata=metadata
+        host=serve_cfg.host, port=serve_cfg.port
     )
 
     hostname = socket.gethostname()
     local_ip = socket.gethostbyname(hostname)
     print(
-        f"Serving policy {metadata.get('policy')} on {serve_cfg.host}:{serve_cfg.port} (host={hostname} ip={local_ip})",
+        emoji.emojize(
+            f":rocket: Server listening at tcp://{serve_cfg.host}:{serve_cfg.port} "
+        )
     )
 
     try:

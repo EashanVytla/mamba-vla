@@ -23,11 +23,9 @@ class ZmqPolicyServer:
         *,
         host: str = "0.0.0.0",
         port: int | None = None,
-        metadata: dict | None = None,
     ) -> None:
         self._host = host
         self._port = port or 0
-        self._metadata = metadata or {}
 
         self._context = zmq.Context.instance()
         self._socket: zmq.Socket = self._context.socket(zmq.REP)
