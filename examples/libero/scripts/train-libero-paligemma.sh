@@ -10,7 +10,6 @@ DL_WORKERS=${DL_WORKERS:-8}
 PREFETCH=${PREFETCH:-2}
 NPROCS=${NPROCS:-8}
 
-echo "train-bbox_mix-bsz.sh"
 echo "  DL_WORKERS=$DL_WORKERS"
 echo "  PREFETCH=$PREFETCH"
 echo "  NPROCS=$NPROCS"
@@ -30,6 +29,6 @@ uv run torchrun --standalone --nnodes=1 --nproc_per_node=$NPROCS \
     lr.base=5e-5 \
     +lr.vlm_bridge=1e-5 \
     +lr.action_expert=5e-5 \
-    epochs=50 \
-    save_interval=20 \
+    epochs=150 \
+    save_interval=50 \
     wandb.mode=online \

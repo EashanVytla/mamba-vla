@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from contextlib import nullcontext
 import logging
 import socket
 import time
@@ -60,6 +61,7 @@ class ServeConfig:
     policy: PolicyConfig = MISSING
     checkpoint_path: Optional[str] = None
     merge_policy_cfg: bool = False
+    use_bf16: bool = True  # Enable bf16 autocast for inference
 
 
 cs = ConfigStore.instance()
@@ -126,12 +128,14 @@ class ServePolicy:
         input_transforms: Sequence["TransformFn"],
         output_transforms: Sequence["TransformFn"],
         inference_steps: int = 10,
+        use_bf16: bool = True,
     ) -> None:
         self._model = model
         self._num_steps = inference_steps
         self._device = next(model.parameters()).device
         self._input_transforms = input_transforms
         self._output_transforms = output_transforms
+        self._use_bf16 = use_bf16 and self._device.type == "cuda"
 
     @torch.inference_mode()
     def infer(self, obs: Dict[str, Any]) -> Dict[str, Any]:
@@ -140,9 +144,18 @@ class ServePolicy:
             data_sample = transform.compute(data_sample)
         data_sample: "DataSample" = data_sample.to(self._device).unsqueeze(0)
 
-        actions = self._model.sample_actions(
-            data_sample.observation, num_steps=self._num_steps
+        autocast_ctx = (
+            torch.autocast(
+                device_type=self._device.type,
+                dtype=torch.bfloat16,
+            )
+            if self._use_bf16
+            else nullcontext()
         )
+        with autocast_ctx:
+            actions = self._model.sample_actions(
+                data_sample.observation, num_steps=self._num_steps
+            )
 
         output = {
             PROCESSED_ACTION_KEY: actions.squeeze(0).cpu(),
@@ -171,6 +184,7 @@ def main(cfg: DictConfig) -> None:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info("Using device: %s", device)
+    use_bf16 = serve_cfg.use_bf16 and device.type == "cuda"
 
     # Create model from policy config
     for i, spec in enumerate(list(serve_cfg.data.input_transforms or [])):
@@ -197,6 +211,8 @@ def main(cfg: DictConfig) -> None:
             )
 
     model.eval()
+    if use_bf16:
+        model.bfloat16()
 
     # Build transforms
     input_transforms = build_input_transforms(serve_cfg.data, serve_cfg.policy)
@@ -212,6 +228,7 @@ def main(cfg: DictConfig) -> None:
         input_transforms=input_transforms,
         output_transforms=output_transforms,
         inference_steps=serve_cfg.inference_steps,
+        use_bf16=use_bf16,
     )
 
     # Warmup once to trigger initialization
