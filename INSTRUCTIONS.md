@@ -16,7 +16,7 @@ uv run torchrun --standalone --nnodes=1 --nproc_per_node=8 \
     wandb.mode=online
 
 # LIBERO with PaliGemma
-uv run torchrun --standalone --nnodes=1 --nproc_per_node=8 \
+uv run torchrun --standalone --nnodes=1 --nproc_per_node=1 \
     scripts/train_policy.py \
     policy=pi-paligemma \
     policy.state_history=0 \
