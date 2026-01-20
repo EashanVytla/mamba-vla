@@ -12,6 +12,7 @@ import emoji
 
 import torch
 import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from tensordict import TensorDict
 
 import hydra
@@ -46,7 +47,6 @@ import vla_scratch.configs  # noqa: F401
 
 if TYPE_CHECKING:
     from vla_scratch.transforms.data_types import DataSample
-    from torch.distributed.tensor import DTensor
     from vla_scratch.policies.base import BasePolicy
     from torch.distributed.fsdp._fully_shard import FSDPModule
 
@@ -84,6 +84,7 @@ class TrainConfig:
     grad_accum_steps: int = 1
 
     low_mem: bool = False
+    use_ddp: bool = False
 
     # Learning rates keyed by module path; "base" applies to remaining params
     lr: dict[str, float] = field(default_factory=lambda: {"base": 3e-6})
@@ -190,23 +191,27 @@ def main(cfg: DictConfig) -> None:
     train_cfg.policy.state_dim = dummy_data.observation.state.shape[-1]
 
     with torch.device(device):
-        model: "BasePolicy" = train_cfg.policy.instantiate()
+        policy: "BasePolicy" = train_cfg.policy.instantiate()
 
     # Warmup pass
     print_with_rank(emoji.emojize(":fire: Warmup pass..."))
-    loss, _ = model.compute_loss(dummy_data)
+    loss, _ = policy.compute_loss(dummy_data)
     loss.backward()
 
-    model.initialize_weights()
+    policy.initialize_weights()
     if train_cfg.low_mem:
-        model = model.bfloat16()
+        policy = policy.bfloat16()
 
-    model: "FSDPModule" | "BasePolicy" = model.apply_fsdp(
-        param_type=torch.bfloat16,
-        output_dtype=torch.float32,
-        reduce_type=torch.bfloat16 if train_cfg.low_mem else torch.float32,
-        mesh=mesh,
-    )
+    if train_cfg.use_ddp:
+        model: "DDP" = DDP(policy, device_ids=[local_rank])
+    else:
+        model: "FSDPModule" = policy.apply_fsdp(
+            param_type=torch.bfloat16,
+            output_dtype=torch.float32,
+            reduce_type=torch.bfloat16 if train_cfg.low_mem else torch.float32,
+            mesh=mesh,
+        )
+    model: "FSDPModule" | "DDP"
 
     if train_cfg.train_data:
         train_batch_sizes_by_name = {
@@ -307,7 +312,8 @@ def main(cfg: DictConfig) -> None:
         model.train()
         for i in pbar:
             torch.cuda.nvtx.range_push("Zero Grad")
-            model.unshard()
+            if not train_cfg.use_ddp:
+                model.unshard()
             optimizer.zero_grad(set_to_none=True)
             torch.cuda.nvtx.range_pop()
 
@@ -324,7 +330,7 @@ def main(cfg: DictConfig) -> None:
                     )
                     torch.cuda.nvtx.range_pop()
 
-                    loss, log_dict = model.compute_loss(data_sample)
+                    loss, log_dict = policy.compute_loss(data_sample)
                     torch.cuda.nvtx.range_push("Loss Backward")
                     (loss / train_cfg.grad_accum_steps / world_size).backward()
                     torch.cuda.nvtx.range_pop()
@@ -341,13 +347,15 @@ def main(cfg: DictConfig) -> None:
                     log_td.update(perf_dict)
 
             torch.cuda.nvtx.range_push("Optimizer Step")
-            norm_before_clip: "DTensor" = torch.nn.utils.clip_grad_norm_(
+            norm_before_clip = torch.nn.utils.clip_grad_norm_(
                 model.parameters(), max_norm=train_cfg.clip_grad_norm
             )
             optimizer.step()
             torch.cuda.nvtx.range_pop()
 
-            log_td["loss/grad_norm"] = norm_before_clip.full_tensor()
+            if not train_cfg.use_ddp:
+                norm_before_clip = norm_before_clip.full_tensor()
+            log_td["loss/grad_norm"] = norm_before_clip
             log_td = TensorDict(log_td, [])
 
             log_tds.append(log_td)
@@ -389,14 +397,15 @@ def main(cfg: DictConfig) -> None:
                     and len(eval_loaders) > 0
                 ):
                     model.eval()
-                    model.unshard()
+                    if not train_cfg.use_ddp:
+                        model.unshard()
                     for eval_key, (
                         eval_dataloader,
                         eval_type,
                     ) in eval_loaders.items():
                         if eval_type == "sample_mse":
                             eval_metrics = eval_sample_mse(
-                                model=model,
+                                model=policy,
                                 dataloader=eval_dataloader,
                                 device=device,
                                 num_sample_steps=train_cfg.eval_num_sample_steps,
@@ -404,7 +413,7 @@ def main(cfg: DictConfig) -> None:
                             )
                         elif eval_type == "generation":
                             eval_metrics = eval_generation(
-                                model=model,
+                                model=policy,
                                 dataloader=eval_dataloader,
                                 device=device,
                                 local_rank=local_rank,

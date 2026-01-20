@@ -2,24 +2,22 @@
 
 ## Files at a Glance
 
-| Path                           | Description                                                 |
-|--------------------------------|-------------------------------------------------------------|
-| `base.py`                      | `BasePolicy` interface.                                     |
-| `config.py`                    | Hydra `PolicyConfig` definitions and registrations.         |
-| `utils/transformers.py`        | Shared math helpers (noise, rotary, sinusoidal embeddings). |
-| `utils/training.py`            | FSDP + gradient checkpointing helpers for training.         |
-| `modules/action_expert/dit.py` | Diffusion action head shared across policies.               |
-| `modules/vlm_bridge/*`         | VLM utilities for Paligemma, Qwen, etc.   |
-| `pi/`                          | Pi policy implementation (config + model).        |
+| Path                      | Description                                         |
+|---------------------------|-----------------------------------------------------|
+| `config.py`               | Hydra `PolicyConfig` definitions and registrations. |
+| `pi/`                     | Pi policy implementation (config + model).          |
+| `modules/action_expert/*` | Flow matching action head.                          |
+| `modules/vlm_bridge/*`    | VLM bridge for Paligemma, Qwen, SmolVLM, etc.       |
+| `utils/`                  | Policy-related utilities.                           |
 
 
 ## Core Execution Flow
 
 1. Policies expose `encode_prefix` and `predict_suffix`; `compute_loss` and `sample_actions` compose those primitives during training and serving.
 2. `encode_prefix` calls the chosen VLM bridge to produce [`VLMOutputs`](../../vla_scratch/policies/modules/vlm_bridge/data_types.py).
-3. Each VLM bridge expects `Observation.policy_input` to be prepared by its matching processor (e.g., `QwenBridge` with `QwenProcessor`), ensuring modality-specific tensors are present before the forward pass.
-4. `predict_suffix` consumes `VLMOutputs`, denoises Gaussian noises to predict flow matching velocity field via the action expert head.
-5. Layer-wise FSDP sharding and gradient checkpointing are applied through helpers in `utils/training.py`.
+3. VLM bridge expects `Observation.policy_input` to be prepared by its matching processor (e.g., `QwenBridge` with `QwenProcessor`), ensuring VLM model-specific tensors are present before the forward pass.
+4. `predict_suffix` consumes `VLMOutputs`, denoises Gaussian noises to predict flow matching velocity via the action expert head.
+5. Layer-wise FSDP sharding and gradient checkpointing are applied with `apply_fsdp` through helpers in `utils/training.py`.
 
 ## Optimizations
 

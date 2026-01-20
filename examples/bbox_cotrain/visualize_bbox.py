@@ -12,7 +12,7 @@ from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, MISSING, OmegaConf
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-from vla_scratch.policies.config import PolicyConfig, create_policy
+from vla_scratch.policies.config import PolicyConfig
 from vla_scratch.datasets.config import DataConfig
 from vla_scratch.helpers.data import create_dataset
 from vla_scratch.utils.checkpoint import (
@@ -88,7 +88,7 @@ def main(cfg: DictConfig) -> None:
                 args.policy.state_dim = state_dim
     print("Initializing model...")
     with torch.device(device):
-        model = create_policy(args.policy)
+        model = args.policy.instantiate()
     print("Model initialized.")
 
     # Resolve checkpoint path (supports file or directory)

@@ -52,21 +52,19 @@ See [scripts/README.md](scripts/README.md) for more training commands. See [exam
     ![data model](assets/data_model.png)
 - **Dedicated Tuning for a First-Class Performance Stack** 
     - We rewrite the forward pass of VLMs to [eliminate all host-device syncs](vla_scratch/policies/README.md).
-    - Instead of relying on generic libaries like `accelerate`, `vla-scratch` leverage torch native operations like FSDP2 and gradient checkpointing for dedicated performance tuning.
+    - Instead of relying on generic libaries like `accelerate`, `vla-scratch` leverage native `torch` operations like `FSDP2` and gradient checkpointing for dedicated performance tuning.
     ![performance](assets/performance-result.png)
 - **Rich Feature Set Out-of-the-Box**
     - Multi-source dataset co-training: VQA and robotic datasets [co-training](examples/bbox_cotrain).
     - Multi VLM backbone support: [Qwen3-VL](vla_scratch/policies/modules/vlm_bridge/qwen/bridge.py), [PaliGemma 1/2](vla_scratch/policies/modules/vlm_bridge/paligemma/bridge.py), [SmolVLM](vla_scratch/policies/modules/vlm_bridge/smolvlm/bridge.py).
-    - Simulation-Ready [Serving Scripts](examples/).
+    - Simulation-ready checkpoints and [serving scripts](examples/).
 - **Clarity-Focused Hydra Workflow for Seamless Experimentation** 
-    - Every [policy](vla_scratch/policies/pi/config.py) and [data](vla_scratch/datasets/config.py) config is registered with Hydra's `ConfigStore`, so experiments are overrideable with minimal boilerplate.
+    - Every [policy](vla_scratch/policies/pi/config.py) and [data](vla_scratch/datasets/config.py) config is registered with Hydra, so experiments are overrideable with minimal boilerplate.
     - Training, eval, and serving scripts share a common config grammar, so switching between workflows is seamless.
 
 ---
 
 ## 🗂️ Codebase Structure
-
-VLA-Scratch is a fully modular, high-performance VLA stack built around TensorClass data models, hierarchical config system, and reusable training helpers.
 
 | Path                                                 | Description                                  |
 |------------------------------------------------------|----------------------------------------------|

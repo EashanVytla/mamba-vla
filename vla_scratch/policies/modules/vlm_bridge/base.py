@@ -18,8 +18,8 @@ class VLMOutputs(TensorClass):
     prefix_pad_masks: at.Bool[torch.Tensor, " batch seq_len"]  # noqa: F722
     key_states: at.Float[torch.Tensor, " batch n_layer n_head seq_len head_dim"]  # noqa: F722
     value_states: at.Float[
-        torch.Tensor, " batch n_layer n_head seq_len head_dim"
-    ]  # noqa: F722
+        torch.Tensor, " batch n_layer n_head seq_len head_dim"  # noqa: F722
+    ]
     hidden_state_list: at.Float[torch.Tensor, " batch n_layer seq_len hidden"]  # noqa: F722
 
 

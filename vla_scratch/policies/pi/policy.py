@@ -45,8 +45,8 @@ if TYPE_CHECKING:
 class SuffixInput(TensorClass):
     prefix_pad_masks: at.Bool[torch.Tensor, " batch prefix_len"]  # noqa: F722
     hidden_state_list: at.Float[
-        torch.Tensor, " batch n_layer prefix_len hidden"
-    ]  # noqa: F722
+        torch.Tensor, " batch n_layer prefix_len hidden"  # noqa: F722
+    ]
 
 
 class PiPolicy(BasePolicy):
@@ -419,8 +419,8 @@ class PiPolicy(BasePolicy):
         self,
         state: at.Float[torch.Tensor, " batch_size state_history state_dim"],  # noqa: F722
         noisy_actions: at.Float[
-            torch.Tensor, " batch_size action_horizon action_dim"
-        ],  # noqa: F722
+            torch.Tensor, " batch_size action_horizon action_dim"  # noqa: F722
+        ],
         time: at.Float[torch.Tensor, " batch_size"],  # noqa: F722
     ) -> Tuple[
         at.Float[torch.Tensor, " batch_size action_horizon hidden_dim"],  # noqa: F722

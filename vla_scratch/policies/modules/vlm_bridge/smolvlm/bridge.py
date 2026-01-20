@@ -202,7 +202,7 @@ class SmolVLMBridge(VLMBridge):
         for layer_idx, decoder_layer in enumerate(text_model.layers):
             torch.cuda.nvtx.range_push(f"layer_{layer_idx}")
             past_key_values_this_layer = copy(past_key_values)
-            hidden_states = apply_checkpoint_when_training(
+            outputs = apply_checkpoint_when_training(
                 self,
                 decoder_layer,
                 hidden_states,
@@ -211,8 +211,11 @@ class SmolVLMBridge(VLMBridge):
                 position_embeddings=position_embeddings,
             )
             torch.cuda.nvtx.range_pop()
-            layer_cache = past_key_values_this_layer.layers.pop(-1)
-            kv_cache_list.append((layer_cache.keys, layer_cache.values))
+            # layer_cache = past_key_values_this_layer.layers.pop(-1)
+            # kv = (layer_cache.keys, layer_cache.values)
+            hidden_states, kv = outputs
+
+            kv_cache_list.append(kv)
             encoder_hidden_states_list.append(hidden_states)
 
         hidden_states = text_model.norm(hidden_states)

@@ -1,10 +1,15 @@
 import torch
+import torch.nn.functional as F
 from contextlib import contextmanager
+from typing import Optional, Tuple
 
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.smolvlm.modeling_smolvlm import (
     SmolVLMModel,
     SmolVLMVisionEmbeddings,
 )
+
+from vla_scratch.policies.utils.transformers import apply_rotary_pos_emb
 
 
 def _smolvlm_inputs_merger_fast(
@@ -138,9 +143,57 @@ def _smolvlm_get_image_features_fast(
     return image_hidden_states
 
 
+def _smolvlm_text_decoder_layer_forward(
+    self: LlamaDecoderLayer,
+    hidden_states: torch.Tensor,
+    *,
+    attention_mask: Optional[torch.Tensor] = None,
+    position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+    past_key_values=None,
+):
+    """Minimal Llama decoder layer forward with fused projections + sdpa."""
+    residual = hidden_states
+    hidden_states = self.input_layernorm(hidden_states)
+
+    # Projections
+    bsz, seq_len, _ = hidden_states.shape
+    head_dim = self.self_attn.head_dim
+    q = self.self_attn.q_proj(hidden_states).view(bsz, seq_len, -1, head_dim)
+    k = self.self_attn.k_proj(hidden_states).view(bsz, seq_len, -1, head_dim)
+    v = self.self_attn.v_proj(hidden_states).view(bsz, seq_len, -1, head_dim)
+    q = q.transpose(1, 2)
+    k = k.transpose(1, 2)
+    v = v.transpose(1, 2)
+
+    if position_embeddings is None:
+        raise ValueError("position_embeddings must be provided")
+    cos, sin = position_embeddings
+    q, k = apply_rotary_pos_emb(q, k, cos, sin)
+
+    attn_output = F.scaled_dot_product_attention(
+        q,
+        k,
+        v,
+        attn_mask=attention_mask,
+        dropout_p=0.0,
+        enable_gqa=True,
+        scale=self.self_attn.scaling,
+    )
+    attn_output = attn_output.transpose(1, 2).reshape(bsz, seq_len, -1)
+    attn_output = self.self_attn.o_proj(attn_output)
+    hidden_states = residual + attn_output
+
+    residual = hidden_states
+    hidden_states = self.post_attention_layernorm(hidden_states)
+    hidden_states = self.mlp(hidden_states)
+    hidden_states = residual + hidden_states
+    return hidden_states, (k, v)
+
+
 orig_inputs_merger = SmolVLMModel.inputs_merger
 orig_vision_forward = SmolVLMVisionEmbeddings.forward
 orig_get_image_features = SmolVLMModel.get_image_features
+orig_llama_layer_forward = LlamaDecoderLayer.forward
 REPLACED = False
 
 
@@ -150,6 +203,7 @@ def replace_smolvlm_forward():
         SmolVLMModel.inputs_merger = _smolvlm_inputs_merger_fast
         SmolVLMVisionEmbeddings.forward = _smolvlm_vision_embeddings_fast
         SmolVLMModel.get_image_features = _smolvlm_get_image_features_fast
+        LlamaDecoderLayer.forward = _smolvlm_text_decoder_layer_forward
         REPLACED = True
 
 
@@ -159,6 +213,7 @@ def restore_smolvlm_forward():
         SmolVLMModel.inputs_merger = orig_inputs_merger
         SmolVLMVisionEmbeddings.forward = orig_vision_forward
         SmolVLMModel.get_image_features = orig_get_image_features
+        LlamaDecoderLayer.forward = orig_llama_layer_forward
         REPLACED = False
 
 
