@@ -133,6 +133,7 @@ pi_mamba_config = PiConfig(
     model_id="state-spaces/mamba-2.8b-hf",
     vlm_type="MambaForCausalLM",
     vision_encoder_id="google/siglip-base-patch16-224",
+    freeze_llm_backbone=True,
     transforms=[
         {
             "_target_": "vla_scratch.policies.modules.vlm_bridge.mamba.processor.MambaProcessor",

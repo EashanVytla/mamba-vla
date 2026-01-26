@@ -17,12 +17,11 @@ Verify your installation with the following commands:
 
 ```bash
 # Training
-uv run torchrun --standalone --nnodes=1 --nproc_per_node=8 \
+uv run torchrun --standalone --nnodes=1 --nproc_per_node=4 \
     scripts/train_policy.py \
-    policy=pi-qwen \
+    policy=pi-mamba \
     data=libero-spatial \
     lr.base=5e-5 \
-    +lr.vlm_bridge=1e-5 \
     +lr.action_expert=5e-5 \
     wandb.mode=online
 
