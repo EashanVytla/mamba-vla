@@ -19,6 +19,7 @@ from vla_scratch.policies.modules.vlm_bridge import (
     Qwen3VLBridge,
     PaligemmaBridge,
     SmolVLMBridge,
+    MambaBridge,
 )
 
 from vla_scratch.policies.utils.training import (
@@ -37,7 +38,7 @@ from vla_scratch.policies.utils.transformers import (
 )
 
 if TYPE_CHECKING:
-    from vla_scratch.policies.modules.vlm_bridge.base import VLMOutputs
+    from vla_scratch.policies.modules.vlm_bridge.base import VLMOutputs, VLMOutputsBase
     from vla_scratch.policies.pi.config import PiConfig
     from vla_scratch.transforms.data_types import Observation, DataSample
 
@@ -78,6 +79,12 @@ class PiPolicy(BasePolicy):
             self.vlm_bridge = SmolVLMBridge(
                 model_id=config.model_id,
                 vlm_type=config.vlm_type,
+            )
+        elif config.vlm_type == "MambaForCausalLM":
+            self.vlm_bridge = MambaBridge(
+                model_id=config.model_id,
+                vlm_type=config.vlm_type,
+                config=config,
             )
         else:
             raise NotImplementedError(
@@ -243,7 +250,7 @@ class PiPolicy(BasePolicy):
         )
         return ce_loss, vlm_outputs, log_dict
 
-    def construct_suffix_input(self, vlm_outputs: "VLMOutputs") -> SuffixInput:
+    def construct_suffix_input(self, vlm_outputs: "VLMOutputsBase") -> SuffixInput:
         """Construct SuffixInput from VLMOutputs for caching purposes."""
         # only retain last N layers for action expert
         prefix_pad_masks = vlm_outputs.prefix_pad_masks

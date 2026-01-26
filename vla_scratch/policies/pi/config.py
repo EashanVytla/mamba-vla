@@ -11,6 +11,9 @@ class PiConfig(PolicyConfig):
     vlm_type: str
     model_id: str
 
+    # Vision encoder for Mamba (ignored for transformer VLMs)
+    vision_encoder_id: str = "google/siglip-base-patch16-224"
+
     action_expert_cfg: DiTConfig = field(
         default_factory=lambda: DiTConfig(
             # hidden size
@@ -41,6 +44,9 @@ class PiConfig(PolicyConfig):
     # training
     detach_encoder_output: bool = False
     ce_loss_weight: float = 0.1
+
+    # freezing (Mamba-only: freeze LLM backbone while training vision encoder)
+    freeze_llm_backbone: bool = False
 
     # misc
     obs_register_init_gain: float = 0.02
@@ -120,8 +126,27 @@ pi_smolvlm_config = PiConfig(
     ],
 )
 
+pi_mamba_config = PiConfig(
+    _target_="vla_scratch.policies.pi.policy.PiPolicy",
+    state_history=1,
+    action_horizon=10,
+    model_id="state-spaces/mamba-2.8b-hf",
+    vlm_type="MambaForCausalLM",
+    vision_encoder_id="google/siglip-base-patch16-224",
+    transforms=[
+        {
+            "_target_": "vla_scratch.policies.modules.vlm_bridge.mamba.processor.MambaProcessor",
+            "model_id": "state-spaces/mamba-2.8b-hf",
+            "vision_encoder_id": "google/siglip-base-patch16-224",
+            "max_length": 256,
+            "padding": "max_length",
+        }
+    ],
+)
+
 cs = ConfigStore.instance()
 cs.store(name="pi-paligemma", node=pi_paligemma_config, group="policy")
 cs.store(name="pi-paligemma2", node=pi_paligemma2_config, group="policy")
 cs.store(name="pi-qwen", node=pi_qwen_config, group="policy")
 cs.store(name="pi-smol", node=pi_smolvlm_config, group="policy")
+cs.store(name="pi-mamba", node=pi_mamba_config, group="policy")
