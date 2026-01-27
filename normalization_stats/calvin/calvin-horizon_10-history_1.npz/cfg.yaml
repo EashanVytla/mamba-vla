@@ -1,0 +1,73 @@
+defaults:
+- _self_
+- policy: pi-qwen
+- data: libero-spatial
+data:
+  _target_: vla_scratch.datasets.calvin.dataset.CalvinDataset
+  action_horizon: 10
+  state_history: 1
+  video_backend: null
+  input_transforms: []
+  output_transforms: []
+  output_inv_transforms: []
+  norm_stats_path: normalization_stats/calvin/calvin-horizon_{data.action_horizon}-history_{data.state_history}.npz
+  noise_cfg: null
+  data_root: /local/scratch/vytla.4/calvin/dataset/calvin_debug_dataset/
+  split: training
+  cameras:
+  - rgb_static
+  - rgb_gripper
+  action_type: rel
+  image_size: 200
+policy:
+  _target_: vla_scratch.policies.pi.policy.PiPolicy
+  transforms:
+  - _target_: vla_scratch.policies.modules.vlm_bridge.mamba.processor.MambaProcessor
+    model_id: state-spaces/mamba-2.8b-hf
+    vision_encoder_id: google/siglip-base-patch16-224
+    max_length: 256
+    padding: max_length
+  state_history: 1
+  action_horizon: 10
+  state_dim: null
+  action_dim: null
+  vlm_type: MambaForCausalLM
+  model_id: state-spaces/mamba-2.8b-hf
+  vision_encoder_id: google/siglip-base-patch16-224
+  action_expert_cfg:
+    hidden_size: 1024
+    intermediate_size: 4096
+    num_attention_heads: 32
+    num_key_value_heads: 32
+    head_dim: 128
+    cross_attention_every: 2
+    num_hidden_layers: 12
+    only_attend_to_final_layer: true
+    qk_norm: layernorm
+    rotary_self_attn: true
+    attn_dropout: 0.0
+    mlp_dropout: 0.0
+    mlp_activation: silu
+    rms_norm_eps: 1.0e-06
+    attention_dropout: 0.0
+    attention_bias: true
+    max_position_embeddings: 8192
+    rope_theta: 10000.0
+  num_obs_registers: 4
+  expert_only_use_register: true
+  suffix_add_pos_emb: true
+  use_state: false
+  num_noise_per_sample: 2
+  time_dist_alpha: 1.0
+  time_dist_beta: 1.5
+  detach_encoder_output: false
+  ce_loss_weight: 0.1
+  freeze_llm_backbone: true
+  obs_register_init_gain: 0.02
+  suffix_pos_emb_init_gain: 0.02
+  zero_pos_id_for_obs_register: true
+  causal_mask_obs_register: true
+num_samples: 4096
+batch_size: 8
+num_workers: 4
+pin_memory: false

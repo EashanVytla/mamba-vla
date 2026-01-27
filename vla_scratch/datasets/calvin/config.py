@@ -26,6 +26,9 @@ class CalvinConfig(DataConfig):
     # Action type: "rel" for relative actions, "abs" for absolute
     action_type: str = "rel"
 
+    # Target image size (all cameras resized to this)
+    image_size: int = 200
+
     # Normalization stats path
     norm_stats_path: str = "normalization_stats/calvin/calvin-horizon_{data.action_horizon}-history_{data.state_history}.npz"
 

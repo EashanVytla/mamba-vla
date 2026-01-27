@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 from vla_scratch.transforms.data_keys import (
@@ -51,58 +52,41 @@ class CalvinDataset(Dataset):
         self._build_frame_indices()
 
     def _load_episode_info(self):
-        """Load episode boundaries and language annotations."""
+        """Load language annotations (only annotated segments are used)."""
         split_path = self.data_root / self.split
 
-        # Load episode start/end indices
-        ep_ids_path = split_path / "ep_start_end_ids.npy"
-        if ep_ids_path.exists():
-            self.episode_ids = np.load(ep_ids_path)
+        # Load language annotations
+        # Format: {'language': {'ann': [...], 'task': [...]}, 'info': {'indx': [(start, end), ...]}}
+        lang_ann_path = split_path / "lang_annotations" / "auto_lang_ann.npy"
+        self.lang_annotations_map: Dict[Tuple[int, int], str] = {}
+        if lang_ann_path.exists():
+            lang_data = np.load(lang_ann_path, allow_pickle=True).item()
+            annotations = lang_data.get("language", {}).get("ann", [])
+            indices = lang_data.get("info", {}).get("indx", [])
+            for ann, (start, end) in zip(annotations, indices):
+                self.lang_annotations_map[(start, end)] = ann
         else:
             raise FileNotFoundError(
-                f"Episode IDs file not found: {ep_ids_path}. "
-                "Make sure data_root points to a valid CALVIN dataset."
+                f"Language annotations file not found: {lang_ann_path}. "
+                "Make sure data_root points to a valid CALVIN dataset with annotations."
             )
-
-        # Load language annotations if available
-        lang_ann_path = split_path / "lang_annotations" / "auto_lang_ann.npy"
-        if lang_ann_path.exists():
-            self.lang_annotations = np.load(lang_ann_path, allow_pickle=True).item()
-        else:
-            self.lang_annotations = None
 
     def _build_frame_indices(self):
         """Build list of valid frame indices for sampling.
 
-        Each index must have:
-        - state_history frames before it (or be clipped to episode start)
-        - action_horizon frames after it (within the same episode)
+        Only includes frames within annotated segments from auto_lang_ann.npy.
+        Each index must have action_horizon frames after it within the segment.
+        State history is clipped to the segment start.
         """
-        self.frame_indices: List[Tuple[int, int, Optional[str]]] = []
+        self.frame_indices: List[Tuple[int, int, str]] = []
 
-        for ep_idx, (ep_start, ep_end) in enumerate(self.episode_ids):
-            # Valid frames must have enough future actions
-            max_start_idx = ep_end - self.action_horizon + 1
+        for (seg_start, seg_end), annotation in self.lang_annotations_map.items():
+            # Valid frames must have enough future actions within this segment
+            max_start_idx = seg_end - self.action_horizon + 1
 
-            for frame_idx in range(ep_start, max_start_idx + 1):
-                # Get language annotation for this episode if available
-                task = self._get_episode_task(ep_start, ep_end)
-                self.frame_indices.append((frame_idx, ep_start, task))
-
-    def _get_episode_task(self, ep_start: int, ep_end: int) -> Optional[str]:
-        """Get language annotation for an episode."""
-        if self.lang_annotations is None:
-            return None
-
-        # CALVIN lang_annotations is a dict with (start, end) tuples as keys
-        # pointing to list of annotations
-        key = (ep_start, ep_end)
-        if key in self.lang_annotations:
-            annotations = self.lang_annotations[key]
-            if annotations:
-                # Return first annotation (could randomize for data augmentation)
-                return annotations[0]
-        return None
+            for frame_idx in range(seg_start, max_start_idx + 1):
+                # seg_start is used as boundary for state history clipping
+                self.frame_indices.append((frame_idx, seg_start, annotation))
 
     def __len__(self) -> int:
         return len(self.frame_indices)
@@ -120,28 +104,38 @@ class CalvinDataset(Dataset):
         # Load action chunk
         actions = self._load_actions(frame_idx)
 
-        result = {
+        return {
             PROCESSED_IMAGE_KEY: images,
             PROCESSED_IMAGE_MASK_KEY: img_mask,
             PROCESSED_STATE_KEY: state,
             PROCESSED_ACTION_KEY: actions,
+            TASK_KEY: task,
         }
 
-        if task is not None:
-            result[TASK_KEY] = task
-
-        return result
+    def _load_frame_npz(self, frame_idx: int) -> Dict[str, np.ndarray]:
+        """Load all data for a single frame from NPZ file."""
+        split_path = self.data_root / self.split
+        npz_path = split_path / f"episode_{frame_idx:07d}.npz"
+        return dict(np.load(npz_path))
 
     def _load_images(self, frame_idx: int) -> torch.Tensor:
         """Load images from all configured cameras."""
-        split_path = self.data_root / self.split
+        frame_data = self._load_frame_npz(frame_idx)
         images = []
+        target_size = getattr(self.config, "image_size", 200)
 
         for cam in self.cameras:
-            img_path = split_path / cam / f"frame_{frame_idx:07d}.npy"
-            img = np.load(img_path)
+            img = frame_data[cam]
             # CALVIN stores images as uint8 (H, W, C)
-            images.append(torch.from_numpy(img))
+            img_tensor = torch.from_numpy(img)
+            # Resize if needed: (H, W, C) -> (C, H, W) for interpolate, then back
+            if img_tensor.shape[0] != target_size or img_tensor.shape[1] != target_size:
+                img_tensor = img_tensor.permute(2, 0, 1).unsqueeze(0).float()
+                img_tensor = F.interpolate(
+                    img_tensor, size=(target_size, target_size), mode="bilinear", align_corners=False
+                )
+                img_tensor = img_tensor.squeeze(0).permute(1, 2, 0).to(torch.uint8)
+            images.append(img_tensor)
 
         # Stack cameras: (num_cameras, H, W, C)
         return torch.stack(images, dim=0)
@@ -151,14 +145,13 @@ class CalvinDataset(Dataset):
 
         Returns (state_history + 1, state_dim) tensor.
         """
-        split_path = self.data_root / self.split
         states = []
 
         for t in range(-self.state_history, 1):
             # Clip to episode start (don't cross episode boundary)
             state_idx = max(ep_start, frame_idx + t)
-            state_path = split_path / "robot_obs" / f"frame_{state_idx:07d}.npy"
-            state = np.load(state_path)
+            frame_data = self._load_frame_npz(state_idx)
+            state = frame_data["robot_obs"]
             states.append(torch.from_numpy(state).float())
 
         return torch.stack(states, dim=0)
@@ -168,14 +161,13 @@ class CalvinDataset(Dataset):
 
         Returns (action_horizon, action_dim) tensor.
         """
-        split_path = self.data_root / self.split
         action_key = "rel_actions" if self.action_type == "rel" else "actions"
         actions = []
 
         for t in range(self.action_horizon):
             action_idx = frame_idx + t
-            action_path = split_path / action_key / f"frame_{action_idx:07d}.npy"
-            action = np.load(action_path)
+            frame_data = self._load_frame_npz(action_idx)
+            action = frame_data[action_key]
             actions.append(torch.from_numpy(action).float())
 
         return torch.stack(actions, dim=0)

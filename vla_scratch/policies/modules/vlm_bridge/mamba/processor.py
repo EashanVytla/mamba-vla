@@ -64,13 +64,21 @@ class MambaProcessor(TransformFn):
         )
 
     def compute(self, sample: "DataSample") -> "DataSample":
-        images = sample.observation.images
+        images = sample.observation.images  # [num_cameras, H, W, C]
 
-        # Process images with SigLIP
-        pixel_values = self.image_processor(
-            images=images,
-            return_tensors="pt",
-        )["pixel_values"]
+        # Process each camera image separately with SigLIP
+        processed_images = []
+        for img in images:
+            # img is [H, W, C], convert to numpy for processor
+            img_np = img.numpy() if isinstance(img, torch.Tensor) else img
+            processed = self.image_processor(
+                images=img_np,
+                return_tensors="pt",
+            )["pixel_values"]  # [1, C, H, W]
+            processed_images.append(processed.squeeze(0))  # [C, H, W]
+
+        # Stack all camera images: [num_cameras, C, H, W]
+        pixel_values = torch.stack(processed_images, dim=0)
 
         # Build text prompt
         # Format: <task> <<<PROMPT_SEP>>> <generation_prompt> \nAssistant: <answer>

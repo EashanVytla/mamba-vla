@@ -16,11 +16,15 @@ We use [uv](https://docs.astral.sh/uv/) to manage dependencies. Run `GIT_LFS_SKI
 Verify your installation with the following commands:
 
 ```bash
+# Profile memory
+python scripts/profile_memory.py policy=pi-mamba data=libero-spatial
+
 # Training
 uv run torchrun --standalone --nnodes=1 --nproc_per_node=4 \
     scripts/train_policy.py \
     policy=pi-mamba \
-    data=libero-spatial \
+    data=calvin \
+    batch_size=1 \
     lr.base=5e-5 \
     +lr.action_expert=5e-5 \
     wandb.mode=online

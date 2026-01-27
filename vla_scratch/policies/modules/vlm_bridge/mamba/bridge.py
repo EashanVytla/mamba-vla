@@ -170,12 +170,19 @@ class MambaBridge(VLMBridge):
         device = input_ids.device
 
         # Encode images with SigLIP
+        # pixel_values: [batch, num_cameras, C, H, W]
         torch.cuda.nvtx.range_push("encode_vision")
-        vision_outputs = self.vision_encoder(pixel_values=pixel_values)
-        # vision_outputs.last_hidden_state: (batch, num_patches, vision_hidden)
+        num_cams = pixel_values.shape[1]
+        # Flatten cameras into batch: [batch * num_cameras, C, H, W]
+        pixel_values_flat = pixel_values.view(bsz * num_cams, *pixel_values.shape[2:])
+        vision_outputs = self.vision_encoder(pixel_values=pixel_values_flat)
+        # vision_outputs.last_hidden_state: (batch * num_cameras, num_patches, vision_hidden)
         image_embeds = vision_outputs.last_hidden_state
         # Project to Mamba hidden dimension
         image_embeds = self.vision_projector(image_embeds)
+        # Reshape: [batch * num_cameras, num_patches, hidden] -> [batch, num_cameras * num_patches, hidden]
+        num_patches = image_embeds.shape[1]
+        image_embeds = image_embeds.view(bsz, num_cams * num_patches, -1)
         torch.cuda.nvtx.range_pop()
 
         # Get text embeddings from Mamba
