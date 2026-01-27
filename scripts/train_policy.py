@@ -85,6 +85,7 @@ class TrainConfig:
 
     low_mem: bool = False
     use_ddp: bool = False
+    profile_memory: bool = False  # Run one iteration and print memory stats, then exit
 
     # Learning rates keyed by module path; "base" applies to remaining params
     lr: dict[str, float] = field(default_factory=lambda: {"base": 3e-6})
@@ -239,6 +240,53 @@ def main(cfg: DictConfig) -> None:
         fused=True,
     )
     log_model_state_sizes(model, optimizer)
+
+    # Memory profiling mode: run one training step and exit
+    if train_cfg.profile_memory:
+        print_with_rank("Running memory profile...")
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.empty_cache()
+
+        # Get a real batch
+        first_loader = next(iter(train_loaders.values()))
+        data_sample, _ = next(iter(first_loader))
+        data_sample = data_sample.to(device)
+
+        # Forward + backward
+        model.train()
+        if not train_cfg.use_ddp:
+            model.unshard()
+        optimizer.zero_grad(set_to_none=True)
+
+        loss, _ = policy.compute_loss(data_sample)
+        loss.backward()
+
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=train_cfg.clip_grad_norm)
+        optimizer.step()
+
+        torch.cuda.synchronize()
+
+        # Print memory stats
+        peak_mem = torch.cuda.max_memory_allocated() / (1024**3)
+        reserved_mem = torch.cuda.memory_reserved() / (1024**3)
+        total_mem = torch.cuda.get_device_properties(device).total_memory / (1024**3)
+
+        print(f"\n{'='*60}")
+        print(f" Memory Profile (rank {local_rank})")
+        print(f"{'='*60}")
+        print(f"  Batch size:     {data_sample.shape[0]}")
+        print(f"  World size:     {world_size}")
+        print(f"  Peak allocated: {peak_mem:.2f} GB")
+        print(f"  Reserved:       {reserved_mem:.2f} GB")
+        print(f"  Total GPU mem:  {total_mem:.2f} GB")
+        print(f"  Utilization:    {peak_mem / total_mem * 100:.1f}%")
+        print(f"{'='*60}\n")
+
+        if local_rank == 0:
+            print(torch.cuda.memory_summary(abbreviated=True))
+
+        dist.destroy_process_group()
+        return
 
     if train_cfg.checkpoint_path is not None:
         missing, unexpected = load_checkpoint(
