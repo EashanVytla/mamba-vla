@@ -2,7 +2,7 @@
 Memory profiling script for VLA models.
 
 Usage:
-    python scripts/profile_memory.py policy=pi-mamba data=libero-spatial batch_size=16
+    python scripts/profile_memory.py policy=pi-mamba batch_size=16
 
 This script loads the model, creates dummy data, runs a forward and backward pass,
 and reports GPU memory usage.
@@ -18,7 +18,6 @@ from hydra.conf import HydraConf, JobConf, RunDir
 from omegaconf import DictConfig, OmegaConf, MISSING
 
 from vla_scratch.policies.config import PolicyConfig
-from vla_scratch.datasets.config import DataConfig, EvalDataCfg, TrainDataCfg
 from vla_scratch.transforms.data_types import DataSample, Observation, ActionChunk
 from vla_scratch.helpers.data import make_transforms
 
@@ -130,9 +129,6 @@ class ProfileConfig:
         default_factory=lambda: [
             "_self_",
             {"policy": "pi-qwen"},
-            {"data": "libero-spatial"},
-            {"train_data": "none"},
-            {"eval_data": "none"},
         ]
     )
 
@@ -150,9 +146,6 @@ class ProfileConfig:
 
     # Model config
     policy: PolicyConfig = MISSING
-    data: DataConfig = MISSING
-    train_data: TrainDataCfg = field(default_factory=TrainDataCfg)
-    eval_data: EvalDataCfg = field(default_factory=EvalDataCfg)
 
     hydra: HydraConf = field(
         default_factory=lambda: HydraConf(
