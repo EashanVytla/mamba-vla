@@ -1,9 +1,9 @@
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Iterator, List, Optional
 from collections.abc import MutableMapping
 
 from omegaconf import MISSING
+from hydra.core.config_store import ConfigStore
 
 from vla_scratch.utils.config import locate_class
 
@@ -14,6 +14,8 @@ class DataConfig:
     action_horizon: Optional[int] = None
     state_history: Optional[int] = None
     video_backend: Optional[str] = None
+    # Temporal training: number of consecutive frames per sample (None = inherit from policy)
+    temporal_window_size: Optional[int] = None
     # Structured transform lists
     input_transforms: List[Any] = field(default_factory=list)
     output_transforms: List[Any] = field(default_factory=list)
@@ -84,8 +86,6 @@ class TrainDataCfg(MutableMapping[str, TrainDatasetCfg]):
     def __bool__(self) -> bool:
         return bool(self.datasets)
 
-
-from hydra.core.config_store import ConfigStore
 
 cs = ConfigStore.instance()
 cs.store(name="none", node=TrainDataCfg(), group="train_data")

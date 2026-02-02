@@ -12,9 +12,7 @@ import emoji
 
 import torch
 import torch.distributed as dist
-
-torch._dynamo.config.recompile_limit = 64
-
+from torch.nn.parallel import DistributedDataParallel as DDP
 from tensordict import TensorDict
 
 import hydra
@@ -44,16 +42,16 @@ from vla_scratch.utils.checkpoint import (
     save_checkpoint,
     save_cfg_yaml,
 )
+import vla_scratch.configs  # noqa: F401
 
 
 if TYPE_CHECKING:
     from vla_scratch.transforms.data_types import DataSample
-    from torch.distributed.tensor import DTensor
     from vla_scratch.policies.base import BasePolicy
     from torch.distributed.fsdp._fully_shard import FSDPModule
 
+torch._dynamo.config.recompile_limit = 64
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
 torch.set_float32_matmul_precision("high")
 
 
@@ -86,6 +84,8 @@ class TrainConfig:
     grad_accum_steps: int = 1
 
     low_mem: bool = False
+    use_ddp: bool = False
+    profile_memory: bool = False  # Run one iteration and print memory stats, then exit
 
     # Learning rates keyed by module path; "base" applies to remaining params
     lr: dict[str, float] = field(default_factory=lambda: {"base": 3e-6})
@@ -134,8 +134,6 @@ class TrainConfig:
 cs = ConfigStore.instance()
 cs.store(name="train", node=TrainConfig())
 
-import vla_scratch.configs
-
 
 @hydra.main(config_name="train", version_base=None)
 def main(cfg: DictConfig) -> None:
@@ -161,9 +159,9 @@ def main(cfg: DictConfig) -> None:
     os.chdir(run_dir)
     setproctitle(f"{train_cfg.exp_name}")
 
-    assert (
-        train_cfg.eval_interval % train_cfg.log_interval == 0
-    ), "eval-interval must be multiple of log-interval"
+    assert train_cfg.eval_interval % train_cfg.log_interval == 0, (
+        "eval-interval must be multiple of log-interval"
+    )
 
     local_rank, global_rank, world_size, mesh = setup_dist()
     device = torch.device(type="cuda", index=local_rank)
@@ -194,23 +192,27 @@ def main(cfg: DictConfig) -> None:
     train_cfg.policy.state_dim = dummy_data.observation.state.shape[-1]
 
     with torch.device(device):
-        model: "BasePolicy" = train_cfg.policy.instantiate()
+        policy: "BasePolicy" = train_cfg.policy.instantiate()
 
     # Warmup pass
     print_with_rank(emoji.emojize(":fire: Warmup pass..."))
-    loss, _ = model.compute_loss(dummy_data)
+    loss, _ = policy.compute_loss(dummy_data)
     loss.backward()
 
-    model.initialize_weights()
-    if train_cfg.low_mem:
-        model = model.bfloat16()
+    policy.initialize_weights()
+    # Always convert to bfloat16 for uniform dtype (required by FSDP)
+    policy = policy.bfloat16()
 
-    model: "FSDPModule" | "BasePolicy" = model.apply_fsdp(
-        param_type=torch.bfloat16,
-        output_dtype=torch.float32,
-        reduce_type=torch.bfloat16 if train_cfg.low_mem else torch.float32,
-        mesh=mesh,
-    )
+    if train_cfg.use_ddp:
+        model: "DDP" = DDP(policy, device_ids=[local_rank])
+    else:
+        model: "FSDPModule" = policy.apply_fsdp(
+            param_type=torch.bfloat16,
+            output_dtype=torch.bfloat16,
+            reduce_type=torch.bfloat16 if train_cfg.low_mem else torch.float32,
+            mesh=mesh,
+        )
+    model: "FSDPModule" | "DDP"
 
     if train_cfg.train_data:
         train_batch_sizes_by_name = {
@@ -238,6 +240,53 @@ def main(cfg: DictConfig) -> None:
         fused=True,
     )
     log_model_state_sizes(model, optimizer)
+
+    # Memory profiling mode: run one training step and exit
+    if train_cfg.profile_memory:
+        print_with_rank("Running memory profile...")
+        torch.cuda.reset_peak_memory_stats()
+        torch.cuda.empty_cache()
+
+        # Get a real batch
+        first_loader = next(iter(train_loaders.values()))
+        data_sample, _ = next(iter(first_loader))
+        data_sample = data_sample.to(device)
+
+        # Forward + backward
+        model.train()
+        if not train_cfg.use_ddp:
+            model.unshard()
+        optimizer.zero_grad(set_to_none=True)
+
+        loss, _ = policy.compute_loss(data_sample)
+        loss.backward()
+
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=train_cfg.clip_grad_norm)
+        optimizer.step()
+
+        torch.cuda.synchronize()
+
+        # Print memory stats
+        peak_mem = torch.cuda.max_memory_allocated() / (1024**3)
+        reserved_mem = torch.cuda.memory_reserved() / (1024**3)
+        total_mem = torch.cuda.get_device_properties(device).total_memory / (1024**3)
+
+        print(f"\n{'='*60}")
+        print(f" Memory Profile (rank {local_rank})")
+        print(f"{'='*60}")
+        print(f"  Batch size:     {data_sample.shape[0]}")
+        print(f"  World size:     {world_size}")
+        print(f"  Peak allocated: {peak_mem:.2f} GB")
+        print(f"  Reserved:       {reserved_mem:.2f} GB")
+        print(f"  Total GPU mem:  {total_mem:.2f} GB")
+        print(f"  Utilization:    {peak_mem / total_mem * 100:.1f}%")
+        print(f"{'='*60}\n")
+
+        if local_rank == 0:
+            print(torch.cuda.memory_summary(abbreviated=True))
+
+        dist.destroy_process_group()
+        return
 
     if train_cfg.checkpoint_path is not None:
         missing, unexpected = load_checkpoint(
@@ -297,6 +346,8 @@ def main(cfg: DictConfig) -> None:
 
     print_with_rank(emoji.emojize(":rocket: Starting training..."))
     for epoch in range(train_cfg.epochs):
+        epoch_start_time = time.perf_counter()
+
         data_loader_iters = {
             name: next(epoch_iterator)
             for name, epoch_iterator in epoch_iterators.items()
@@ -304,14 +355,15 @@ def main(cfg: DictConfig) -> None:
 
         pbar = tqdm(
             range(steps_per_epoch),
-            desc=f"Epoch {epoch+1}/{train_cfg.epochs}",
+            desc=f"Epoch {epoch + 1}/{train_cfg.epochs}",
             disable=local_rank != 0,
         )
 
         model.train()
         for i in pbar:
             torch.cuda.nvtx.range_push("Zero Grad")
-            model.unshard()
+            if not train_cfg.use_ddp:
+                model.unshard()
             optimizer.zero_grad(set_to_none=True)
             torch.cuda.nvtx.range_pop()
 
@@ -328,7 +380,7 @@ def main(cfg: DictConfig) -> None:
                     )
                     torch.cuda.nvtx.range_pop()
 
-                    loss, log_dict = model.compute_loss(data_sample)
+                    loss, log_dict = policy.compute_loss(data_sample)
                     torch.cuda.nvtx.range_push("Loss Backward")
                     (loss / train_cfg.grad_accum_steps / world_size).backward()
                     torch.cuda.nvtx.range_pop()
@@ -345,13 +397,15 @@ def main(cfg: DictConfig) -> None:
                     log_td.update(perf_dict)
 
             torch.cuda.nvtx.range_push("Optimizer Step")
-            norm_before_clip: "DTensor" = torch.nn.utils.clip_grad_norm_(
+            norm_before_clip = torch.nn.utils.clip_grad_norm_(
                 model.parameters(), max_norm=train_cfg.clip_grad_norm
             )
             optimizer.step()
             torch.cuda.nvtx.range_pop()
 
-            log_td["loss/grad_norm"] = norm_before_clip.full_tensor()
+            if not train_cfg.use_ddp:
+                norm_before_clip = norm_before_clip.full_tensor()
+            log_td["loss/grad_norm"] = norm_before_clip
             log_td = TensorDict(log_td, [])
 
             log_tds.append(log_td)
@@ -393,14 +447,15 @@ def main(cfg: DictConfig) -> None:
                     and len(eval_loaders) > 0
                 ):
                     model.eval()
-                    model.unshard()
+                    if not train_cfg.use_ddp:
+                        model.unshard()
                     for eval_key, (
                         eval_dataloader,
                         eval_type,
                     ) in eval_loaders.items():
                         if eval_type == "sample_mse":
                             eval_metrics = eval_sample_mse(
-                                model=model,
+                                model=policy,
                                 dataloader=eval_dataloader,
                                 device=device,
                                 num_sample_steps=train_cfg.eval_num_sample_steps,
@@ -408,7 +463,7 @@ def main(cfg: DictConfig) -> None:
                             )
                         elif eval_type == "generation":
                             eval_metrics = eval_generation(
-                                model=model,
+                                model=policy,
                                 dataloader=eval_dataloader,
                                 device=device,
                                 local_rank=local_rank,
@@ -441,16 +496,31 @@ def main(cfg: DictConfig) -> None:
                     print(log_string)
                 if global_rank == 0:
                     run.log(log_dict)
-                dist.barrier()
+                # Synchronize all processes (only in distributed mode)
+                if dist.is_initialized():
+                    dist.barrier()
         #     if i == 36:
         #         break
         # break
+
+        # Epoch timing telemetry
+        epoch_end_time = time.perf_counter()
+        epoch_duration = epoch_end_time - epoch_start_time
+        epoch_duration_min = epoch_duration / 60.0
+        if local_rank == 0:
+            print(f"Epoch {epoch + 1}/{train_cfg.epochs} completed in {epoch_duration_min:.2f} min ({epoch_duration:.1f}s)")
+        if global_rank == 0:
+            run.log({
+                "epoch": epoch + 1,
+                "perf/epoch_duration_sec": epoch_duration,
+                "perf/epoch_duration_min": epoch_duration_min,
+            })
 
         if (epoch + 1) % train_cfg.save_interval == 0 or (
             epoch + 1
         ) == train_cfg.epochs:
             save_checkpoint(
-                model, optimizer, global_rank, f"checkpoint_{epoch+1}"
+                model, optimizer, global_rank, f"checkpoint_{epoch + 1}"
             )
 
     for epoch_iterator in epoch_iterators.values():

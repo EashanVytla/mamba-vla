@@ -1,0 +1,93 @@
+
+Inactive Modules:
+  1) mvapich/3.0
+
+
+Activating Modules:
+  1) mvapich/3.0
+
+__      __ _                          _____   _____  _____             _______   _____  _    _ 
+\ \    / /| |         /\             / ____| / ____||  __ \     /\    |__   __| / ____|| |  | |
+ \ \  / / | |        /  \    ______ | (___  | |     | |__) |   /  \      | |   | |     | |__| |
+  \ \/ /  | |       / /\ \  |______| \___ \ | |     |  _  /   / /\ \     | |   | |     |  __  |
+   \  /   | |____  / ____ \          ____) || |____ | | \ \  / ____ \    | |   | |____ | |  | |
+    \/    |______|/_/    \_\        |_____/  \_____||_|  \_\/_/    \_\   |_|    \_____||_|  |_|
+                                                                                               
+                                                                                               
+
+ World size: 1
+Device mesh: None
+[2026-01-28 19:44:52,040][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/state-spaces/mamba-2.8b-hf/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+[2026-01-28 19:44:52,045][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/state-spaces/mamba-2.8b-hf/96c48e0292b63f5346b6d30061af2551f7101e26/config.json "HTTP/1.1 200 OK"
+[2026-01-28 19:44:52,265][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/state-spaces/mamba-2.8b-hf/resolve/main/tokenizer_config.json "HTTP/1.1 307 Temporary Redirect"
+[2026-01-28 19:44:52,269][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/state-spaces/mamba-2.8b-hf/96c48e0292b63f5346b6d30061af2551f7101e26/tokenizer_config.json "HTTP/1.1 200 OK"
+[2026-01-28 19:44:52,324][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/models/state-spaces/mamba-2.8b-hf/tree/main/additional_chat_templates?recursive=false&expand=false "HTTP/1.1 404 Not Found"
+[2026-01-28 19:44:52,911][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/models/state-spaces/mamba-2.8b-hf/tree/main?recursive=true&expand=false "HTTP/1.1 200 OK"
+[2026-01-28 19:44:53,108][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/google/siglip-base-patch16-224/resolve/main/processor_config.json "HTTP/1.1 404 Not Found"
+[2026-01-28 19:44:53,152][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/google/siglip-base-patch16-224/resolve/main/preprocessor_config.json "HTTP/1.1 307 Temporary Redirect"
+[2026-01-28 19:44:53,156][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/google/siglip-base-patch16-224/7fd15f0689c79d79e38b1c2e2e2370a7bf2761ed/preprocessor_config.json "HTTP/1.1 200 OK"
+/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/utils/data/dataloader.py:626: UserWarning: This DataLoader will create 4 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
+  warnings.warn(
+[2026-01-28 19:44:54,650][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/state-spaces/mamba-2.8b-hf/resolve/main/config.json "HTTP/1.1 307 Temporary Redirect"
+[2026-01-28 19:44:54,655][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/state-spaces/mamba-2.8b-hf/96c48e0292b63f5346b6d30061af2551f7101e26/config.json "HTTP/1.1 200 OK"
+[2026-01-28 19:44:55,401][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/state-spaces/mamba-2.8b-hf/resolve/main/model.safetensors "HTTP/1.1 404 Not Found"
+[2026-01-28 19:44:55,591][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/state-spaces/mamba-2.8b-hf/resolve/main/model.safetensors.index.json "HTTP/1.1 307 Temporary Redirect"
+[2026-01-28 19:44:55,595][httpx][INFO] - HTTP Request: HEAD https://huggingface.co/api/resolve-cache/models/state-spaces/mamba-2.8b-hf/96c48e0292b63f5346b6d30061af2551f7101e26/model.safetensors.index.json "HTTP/1.1 200 OK"
+[2026-01-28 19:44:55,627][httpx][INFO] - HTTP Request: GET https://huggingface.co/api/models/state-spaces/mamba-2.8b-hf/revision/main "HTTP/1.1 200 OK"
+Fetching 3 files:   0%|          | 0/3 [00:00<?, ?it/s]Fetching 3 files: 100%|██████████| 3/3 [00:00<00:00, 821.66it/s]
+Error executing job with overrides: ['policy=pi-mamba', 'data=calvin', 'low_mem=True', 'batch_size=1', 'lr.base=5e-5', '+lr.action_expert=5e-5', 'wandb.project=mamba-vla', 'wandb.mode=online', 'profile_memory=True']
+Traceback (most recent call last):
+  File "/users/PAS2152/eashanvytla1/mamba-vla/scripts/train_policy.py", line 195, in main
+    policy: "BasePolicy" = train_cfg.policy.instantiate()
+  File "/users/PAS2152/eashanvytla1/mamba-vla/vla_scratch/policies/config.py", line 18, in instantiate
+    return policy_cls(self)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/vla_scratch/policies/pi/policy.py", line 84, in __init__
+    self.vlm_bridge = MambaBridge(
+  File "/users/PAS2152/eashanvytla1/mamba-vla/vla_scratch/policies/modules/vlm_bridge/mamba/bridge.py", line 61, in __init__
+    self.causal_model: "MambaForCausalLM" = vlm_cls.from_pretrained(
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/transformers/modeling_utils.py", line 4072, in from_pretrained
+    model = cls(config, *model_args, **model_kwargs)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/transformers/models/mamba/modeling_mamba.py", line 714, in __init__
+    self.backbone = MambaModel(config)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/transformers/models/mamba/modeling_mamba.py", line 602, in __init__
+    self.layers = nn.ModuleList([MambaBlock(config, layer_idx=idx) for idx in range(config.num_hidden_layers)])
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/transformers/models/mamba/modeling_mamba.py", line 602, in <listcomp>
+    self.layers = nn.ModuleList([MambaBlock(config, layer_idx=idx) for idx in range(config.num_hidden_layers)])
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/transformers/models/mamba/modeling_mamba.py", line 466, in __init__
+    self.mixer = MambaMixer(config, layer_idx=layer_idx)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/transformers/models/mamba/modeling_mamba.py", line 210, in __init__
+    (mamba_ssm.selective_state_update, mamba_ssm.selective_scan_fn, mamba_ssm.mamba_inner_fn)
+AttributeError: module 'mamba_ssm' has no attribute 'selective_state_update'
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.
+[rank0]:[W128 19:45:16.562797479 ProcessGroupNCCL.cpp:1479] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+E0128 19:45:18.862000 3265420 torch/distributed/elastic/multiprocessing/api.py:874] failed (exitcode: 1) local_rank: 0 (pid: 3265428) of binary: /users/PAS2152/eashanvytla1/mamba-vla/.venv/bin/python3
+Traceback (most recent call last):
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/bin/torchrun", line 10, in <module>
+    sys.exit(main())
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 355, in wrapper
+    return f(*args, **kwargs)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/run.py", line 892, in main
+    run(args)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/run.py", line 883, in run
+    elastic_launch(
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 139, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 270, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+scripts/train_policy.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-01-28_19:45:18
+  host      : a0326.ten.osc.edu
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 3265428)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

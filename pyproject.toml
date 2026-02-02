@@ -17,17 +17,19 @@ dependencies = [
     "tqdm",
     "einops",
     "tensordict",
-    "transformers==4.57.1",
-    "lerobot @ git+https://github.com/huggingface/lerobot@v0.4.2",
+    "transformers>=4.57.1",
+    "lerobot @ git+https://github.com/huggingface/lerobot@v0.4.3",
     "num2words", # for smolvlm
     "jsonlines",
     "pillow",
-    "torchvision==0.22.0",
+    "torchvision>=0.22.0",
     "hydra-core",
     "omegaconf",
     "wandb",
     "setproctitle",
     "setuptools",
+    "mamba-ssm",
+    "causal-conv1d>=1.2.0",  # Required for mamba-ssm fast CUDA kernels
 
     # serve policy
     "pyzmq",
@@ -54,11 +56,10 @@ include = [
 ]
 namespaces = true
 
-[project.optional-dependencies]
-dev = [
-    "black>=24.8.0",
+[tool.uv]
+override-dependencies = [
+    "huggingface_hub>=1.0.0",
 ]
 
-[tool.black]
+[tool.ruff]
 line-length = 80
-target-version = ["py310"]

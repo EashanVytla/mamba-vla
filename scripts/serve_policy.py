@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from contextlib import nullcontext
 import logging
-import socket
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Sequence, cast, TYPE_CHECKING
@@ -17,7 +16,7 @@ from omegaconf import DictConfig, MISSING, OmegaConf
 
 from vla_scratch.transforms.data_keys import PROCESSED_ACTION_KEY
 from vla_scratch.datasets.config import DataConfig
-from vla_scratch.policies.config import PolicyConfig, create_policy
+from vla_scratch.policies.config import PolicyConfig
 
 from vla_scratch.helpers.data import (
     build_input_transforms,
@@ -194,7 +193,7 @@ def main(cfg: DictConfig) -> None:
 
     dataset = _initialize_policy_dims(serve_cfg.data, serve_cfg.policy)
     with torch.device(device):
-        model = create_policy(serve_cfg.policy)
+        model = serve_cfg.policy.instantiate()
 
     # Load latest checkpoint
     if (ckpt := serve_cfg.checkpoint_path) is not None:
@@ -242,8 +241,6 @@ def main(cfg: DictConfig) -> None:
     policy.reset()
     server = ZmqPolicyServer(host=serve_cfg.host, port=serve_cfg.port)
 
-    hostname = socket.gethostname()
-    local_ip = socket.gethostbyname(hostname)
     print(
         emoji.emojize(
             f":rocket: Server listening at tcp://{serve_cfg.host}:{serve_cfg.port} "

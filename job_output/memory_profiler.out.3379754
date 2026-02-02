@@ -1,0 +1,66 @@
+/var/spool/slurmd/job3379754/slurm_script: line 12: cd: mamba-vla: No such file or directory
+   Building vla-scratch @ file:///users/PAS2152/eashanvytla1/mamba-vla
+   Building evdev==1.9.2
+Downloading transformers (11.4MiB)
+Downloading numpy (16.0MiB)
+Downloading tokenizers (3.1MiB)
+Downloading opencv-python-headless (51.5MiB)
+Downloading torchvision (7.1MiB)
+Downloading triton (149.2MiB)
+   Updating https://github.com/huggingface/lerobot (v0.4.2)
+Downloading rerun-sdk (94.2MiB)
+Downloading pyarrow (45.3MiB)
+Downloading diffusers (3.9MiB)
+Downloading aiohttp (1.6MiB)
+Downloading cmake (28.3MiB)
+Downloading pillow (6.7MiB)
+Downloading av (37.3MiB)
+Downloading wandb (18.7MiB)
+Downloading pydantic-core (2.0MiB)
+Downloading torch (825.1MiB)
+Downloading torchcodec (1.3MiB)
+Downloading pandas (12.2MiB)
+Downloading networkx (1.6MiB)
+   Building docopt==0.6.2
+   Building antlr4-python3-runtime==4.9.3
+  × Failed to download and build `lerobot @
+  │ git+https://github.com/huggingface/lerobot@58f70b6bd370864139a3795ac3497a9eae8c42d5`
+  ├─▶ Git operation failed
+  ╰─▶ process didn't exit successfully: `/usr/bin/git reset --hard
+      58f70b6bd370864139a3795ac3497a9eae8c42d5` (exit status: 128)
+      --- stderr
+      Updating files:  72% (386/531)Updating files:  73% (388/531)Updating
+      files:  74% (393/531)Updating files:  75% (399/531)Updating
+      files:  76% (404/531)Updating files:  77% (409/531)Updating
+      files:  78% (415/531)Updating files:  79% (420/531)Updating
+      files:  80% (425/531)Updating files:  81% (431/531)Updating
+      files:  82% (436/531)Updating files:  83% (441/531)Updating
+      files:  84% (447/531)Updating files:  85% (452/531)Updating
+      files:  86% (457/531)Updating files:  87% (462/531)Updating
+      files:  88% (468/531)Updating files:  89% (473/531)Updating
+      files:  90% (478/531)Updating files:  91% (484/531)Updating
+      files:  92% (489/531)Updating files:  93% (494/531)Updating
+      files:  94% (500/531)Updating files:  95% (505/531)Updating
+      files:  96% (510/531)Updating files:  97% (516/531)Updating files:
+      98% (521/531)Updating files:  99% (526/531)Updating files: 100%
+      (531/531)Updating files: 100% (531/531), done.
+      Downloading tests/artifacts/cameras/image_128x128.png (38 KB)
+      Error downloading object: tests/artifacts/cameras/image_128x128.png
+      (9dc9df0): Smudge error: Error downloading
+      tests/artifacts/cameras/image_128x128.png
+      (9dc9df05797dc0e7b92edc845caab2e4c37c3cfcabb4ee6339c67212b5baba3b):
+      error transferring
+      "9dc9df05797dc0e7b92edc845caab2e4c37c3cfcabb4ee6339c67212b5baba3b":
+      [0] remote missing object
+      9dc9df05797dc0e7b92edc845caab2e4c37c3cfcabb4ee6339c67212b5baba3b
+
+      Errors logged to
+      '/users/PAS2152/eashanvytla1/.cache/uv/git-v0/checkouts/b2400a7a62d6a7cf/58f70b6/.git/lfs/logs/20260127T174602.869217795.log'.
+      Use `git lfs logs last` to view the log.
+      error: external filter 'git-lfs filter-process' failed
+      fatal: tests/artifacts/cameras/image_128x128.png: smudge filter lfs
+      failed
+
+  help: `lerobot` was included because `vla-scratch` (v0.1.0) depends on
+        `lerobot`
+/var/spool/slurmd/job3379754/slurm_script: line 15: scripts/train_policy.py: Permission denied

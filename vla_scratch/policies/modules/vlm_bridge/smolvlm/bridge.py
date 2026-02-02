@@ -15,6 +15,7 @@ from vla_scratch.policies.utils.training import (
 )
 from vla_scratch.policies.modules.vlm_bridge.base import (
     VLMBridge,
+    VLMCache,
     VLMOutputs,
     TARGET_IGNORE_ID,
 )
@@ -86,12 +87,14 @@ class SmolVLMBridge(VLMBridge):
         self,
         observation: "Observation",
         *,
+        cache: Optional[VLMCache] = None,
+        actions: Optional[torch.Tensor] = None,
         extra_embs: Optional[torch.Tensor] = None,
         extra_pad_masks: Optional[torch.Tensor] = None,
         extra_att_masks: Optional[torch.Tensor] = None,
         zero_pos_id_for_extra: bool = False,
         extra_attention_mask: bool = False,
-    ) -> Tuple[torch.Tensor, VLMOutputs, Dict]:
+    ) -> Tuple[torch.Tensor, VLMOutputs, Optional[VLMCache], Dict]:
         policy_td: "SmolVLMPolicyInput" = observation.policy_input
         if not isinstance(policy_td, SmolVLMPolicyInput):
             raise TypeError(
@@ -181,17 +184,17 @@ class SmolVLMBridge(VLMBridge):
             )
             attention_mask = attn_mask[:, None, :, :]
 
-        from transformers.cache_utils import DynamicCache
+        # from transformers.cache_utils import DynamicCache
         from transformers.masking_utils import create_causal_mask
 
         cache_position = torch.arange(embs.shape[1], device=embs.device)
-        past_key_values = DynamicCache()
+        # past_key_values = DynamicCache()
         causal_mask = create_causal_mask(
             config=text_model.config,
             input_embeds=embs,
             attention_mask=attention_mask,
             cache_position=cache_position,
-            past_key_values=past_key_values,
+            past_key_values=None,
             position_ids=position_ids,
         )
         position_embeddings = text_model.rotary_emb(embs, position_ids)
@@ -201,18 +204,21 @@ class SmolVLMBridge(VLMBridge):
         encoder_hidden_states_list = []
         for layer_idx, decoder_layer in enumerate(text_model.layers):
             torch.cuda.nvtx.range_push(f"layer_{layer_idx}")
-            past_key_values_this_layer = copy(past_key_values)
-            hidden_states = apply_checkpoint_when_training(
+            # past_key_values_this_layer = copy(past_key_values)
+            outputs = apply_checkpoint_when_training(
                 self,
                 decoder_layer,
                 hidden_states,
                 attention_mask=causal_mask,
-                past_key_values=past_key_values_this_layer,
+                # past_key_values=past_key_values_this_layer,
                 position_embeddings=position_embeddings,
             )
             torch.cuda.nvtx.range_pop()
-            layer_cache = past_key_values_this_layer.layers.pop(-1)
-            kv_cache_list.append((layer_cache.keys, layer_cache.values))
+            # layer_cache = past_key_values_this_layer.layers.pop(-1)
+            # kv = (layer_cache.keys, layer_cache.values)
+            hidden_states, kv = outputs
+
+            kv_cache_list.append(kv)
             encoder_hidden_states_list.append(hidden_states)
 
         hidden_states = text_model.norm(hidden_states)
@@ -255,4 +261,5 @@ class SmolVLMBridge(VLMBridge):
             "loss/ce_loss": ce_loss.detach(),
             "loss/accuracy": accuracy.detach(),
         }
-        return ce_loss, vlm_outputs, log_dict
+        # Transformer-based VLMs don't use temporal state caching
+        return ce_loss, vlm_outputs, None, log_dict

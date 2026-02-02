@@ -1,0 +1,102 @@
+
+Inactive Modules:
+  1) mvapich/3.0
+
+
+Activating Modules:
+  1) mvapich/3.0
+
+Uninstalled 17 packages in 14.47s
+warning: Failed to hardlink files; falling back to full copy. This may lead to degraded performance.
+         If the cache and target directories are on different filesystems, hardlinking may not be supported.
+         If this is intentional, set `export UV_LINK_MODE=copy` or use `--link-mode=copy` to suppress this warning.
+Installed 17 packages in 45.55s
+/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'repr' attribute with value False was provided to the `Field()` function, which has no effect in the context it was used. 'repr' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'frozen' attribute with value True was provided to the `Field()` function, which has no effect in the context it was used. 'frozen' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+__      __ _                          _____   _____  _____             _______   _____  _    _ 
+\ \    / /| |         /\             / ____| / ____||  __ \     /\    |__   __| / ____|| |  | |
+ \ \  / / | |        /  \    ______ | (___  | |     | |__) |   /  \      | |   | |     | |__| |
+  \ \/ /  | |       / /\ \  |______| \___ \ | |     |  _  /   / /\ \     | |   | |     |  __  |
+   \  /   | |____  / ____ \          ____) || |____ | | \ \  / ____ \    | |   | |____ | |  | |
+    \/    |______|/_/    \_\        |_____/  \_____||_|  \_\/_/    \_\   |_|    \_____||_|  |_|
+                                                                                               
+                                                                                               
+
+ World size: 1
+Device mesh: None
+Error executing job with overrides: ['policy=pi-mamba', 'data=calvin', 'batch_size=32', 'lr.base=5e-5', '+lr.action_expert=5e-5', 'wandb.project=mamba-vla', 'wandb.mode=online', 'profile_memory=True']
+Traceback (most recent call last):
+  File "/users/PAS2152/eashanvytla1/mamba-vla/scripts/train_policy.py", line 175, in main
+    train_loaders, eval_loaders = create_dataloaders(
+  File "/users/PAS2152/eashanvytla1/mamba-vla/vla_scratch/helpers/training.py", line 237, in create_dataloaders
+    dataset = get_or_create_dataset(data_cfg, add_noise=add_noise)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/vla_scratch/helpers/training.py", line 225, in get_or_create_dataset
+    dataset = create_dataset(
+  File "/users/PAS2152/eashanvytla1/mamba-vla/vla_scratch/helpers/data.py", line 120, in create_dataset
+    make_transforms(policy_cfg.transforms)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/vla_scratch/helpers/data.py", line 51, in make_transforms
+    return [instantiate_transform(spec) for spec in specs]
+  File "/users/PAS2152/eashanvytla1/mamba-vla/vla_scratch/helpers/data.py", line 51, in <listcomp>
+    return [instantiate_transform(spec) for spec in specs]
+  File "/users/PAS2152/eashanvytla1/mamba-vla/vla_scratch/helpers/data.py", line 39, in instantiate_transform
+    obj = cls(**kwargs)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/vla_scratch/policies/modules/vlm_bridge/mamba/processor.py", line 39, in __init__
+    self.tokenizer: "AutoTokenizer" = transformers.AutoTokenizer.from_pretrained(
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/transformers/models/auto/tokenization_auto.py", line 1104, in from_pretrained
+    tokenizer_class_from_name(config_tokenizer_class) is not None
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/transformers/models/auto/tokenization_auto.py", line 815, in tokenizer_class_from_name
+    if hasattr(main_module, class_name):
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/transformers/utils/import_utils.py", line 2317, in __getattr__
+    module = self._get_module(self._class_to_module[name])
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/transformers/utils/import_utils.py", line 2347, in _get_module
+    raise e
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/transformers/utils/import_utils.py", line 2345, in _get_module
+    return importlib.import_module("." + module_name, self.__name__)
+  File "/users/PAS2152/eashanvytla1/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/importlib/__init__.py", line 126, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+  File "<frozen importlib._bootstrap>", line 1050, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1027, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1006, in _find_and_load_unlocked
+  File "<frozen importlib._bootstrap>", line 688, in _load_unlocked
+  File "<frozen importlib._bootstrap_external>", line 883, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/transformers/models/gpt_neox/tokenization_gpt_neox.py", line 19, in <module>
+    from ...tokenization_utils_tokenizers import TokenizersBackend
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/transformers/tokenization_utils_tokenizers.py", line 28, in <module>
+    from huggingface_hub import is_offline_mode
+ImportError: cannot import name 'is_offline_mode' from 'huggingface_hub' (/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/huggingface_hub/__init__.py)
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.
+[rank0]:[W128 16:47:16.735355126 ProcessGroupNCCL.cpp:1476] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+E0128 16:47:21.232000 531182 torch/distributed/elastic/multiprocessing/api.py:874] failed (exitcode: 1) local_rank: 0 (pid: 531304) of binary: /users/PAS2152/eashanvytla1/mamba-vla/.venv/bin/python3
+Traceback (most recent call last):
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/bin/torchrun", line 10, in <module>
+    sys.exit(main())
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 355, in wrapper
+    return f(*args, **kwargs)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/run.py", line 892, in main
+    run(args)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/run.py", line 883, in run
+    elastic_launch(
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 139, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 270, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+scripts/train_policy.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-01-28_16:47:21
+  host      : a0324.ten.osc.edu
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 531304)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

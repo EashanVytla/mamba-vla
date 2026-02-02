@@ -24,7 +24,7 @@ from torch.utils.data import DataLoader, Subset
 
 from vla_scratch.datasets.config import DataConfig
 from vla_scratch.helpers.data import create_dataset
-from vla_scratch.policies.config import create_policy, PolicyConfig
+from vla_scratch.policies.config import PolicyConfig
 from vla_scratch.utils.checkpoint import (
     find_latest_checkpoint,
     load_model_from_checkpoint,
@@ -105,7 +105,7 @@ def main(cfg: DictConfig) -> None:
     # Model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     with torch.device(device):
-        model: "BasePolicy" = create_policy(policy_cfg)
+        model: "BasePolicy" = policy_cfg.instantiate()
     model.compute_loss(sample0.to(device))
 
     if (ckpt := eval_cfg.checkpoint_path) is not None:

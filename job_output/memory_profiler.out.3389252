@@ -1,0 +1,80 @@
+
+Inactive Modules:
+  1) mvapich/3.0
+
+
+Activating Modules:
+  1) mvapich/3.0
+
+/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'repr' attribute with value False was provided to the `Field()` function, which has no effect in the context it was used. 'repr' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'frozen' attribute with value True was provided to the `Field()` function, which has no effect in the context it was used. 'frozen' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+Traceback (most recent call last):
+  File "/users/PAS2152/eashanvytla1/mamba-vla/scripts/train_policy.py", line 23, in <module>
+    from vla_scratch.policies.config import PolicyConfig
+  File "/users/PAS2152/eashanvytla1/mamba-vla/vla_scratch/policies/__init__.py", line 1, in <module>
+    from .pi.config import *  # noqa: F403
+  File "/users/PAS2152/eashanvytla1/mamba-vla/vla_scratch/policies/pi/config.py", line 4, in <module>
+    from vla_scratch.policies.modules.action_expert.cross_attention_dit import (
+  File "/users/PAS2152/eashanvytla1/mamba-vla/vla_scratch/policies/modules/action_expert/__init__.py", line 1, in <module>
+    from .cross_attention_dit import DiTModel, DiTConfig
+  File "/users/PAS2152/eashanvytla1/mamba-vla/vla_scratch/policies/modules/action_expert/cross_attention_dit.py", line 15, in <module>
+    from vla_scratch.policies.utils.transformers import apply_rotary_pos_emb
+  File "/users/PAS2152/eashanvytla1/mamba-vla/vla_scratch/policies/utils/transformers.py", line 14, in <module>
+    def apply_rotary_pos_emb(
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/__init__.py", line 2572, in compile
+    return torch._dynamo.optimize(
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/_dynamo/eval_frame.py", line 944, in optimize
+    return _optimize(rebuild_ctx, *args, **kwargs)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/_dynamo/eval_frame.py", line 1019, in _optimize
+    backend.get_compiler_config()
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/__init__.py", line 2350, in get_compiler_config
+    from torch._inductor.compile_fx import get_patched_config_dict
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/_inductor/compile_fx.py", line 101, in <module>
+    from .fx_passes.joint_graph import joint_graph_passes
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/_inductor/fx_passes/joint_graph.py", line 23, in <module>
+    from ..pattern_matcher import (
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/_inductor/pattern_matcher.py", line 79, in <module>
+    from .lowering import fallback_node_due_to_unsupported_type
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/_inductor/lowering.py", line 7027, in <module>
+    import_submodule(kernel)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/_dynamo/utils.py", line 3412, in import_submodule
+    importlib.import_module(f"{mod.__name__}.{filename[:-3]}")
+  File "/users/PAS2152/eashanvytla1/.local/share/uv/python/cpython-3.10.18-linux-x86_64-gnu/lib/python3.10/importlib/__init__.py", line 126, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/_inductor/kernel/custom_op.py", line 9, in <module>
+    from torch._inductor.codegen.subgraph import SubgraphTemplate
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/_inductor/codegen/subgraph.py", line 10, in <module>
+    from torch._inductor.ir import (
+ImportError: cannot import name 'get_free_symbols' from 'torch._inductor.ir' (/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/_inductor/ir.py)
+E0128 16:21:47.410000 1168187 torch/distributed/elastic/multiprocessing/api.py:874] failed (exitcode: 1) local_rank: 0 (pid: 1170243) of binary: /users/PAS2152/eashanvytla1/mamba-vla/.venv/bin/python3
+Traceback (most recent call last):
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/bin/torchrun", line 10, in <module>
+    sys.exit(main())
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 355, in wrapper
+    return f(*args, **kwargs)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/run.py", line 892, in main
+    run(args)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/run.py", line 883, in run
+    elastic_launch(
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 139, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 270, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+scripts/train_policy.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-01-28_16:21:47
+  host      : a0254.ten.osc.edu
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 1170243)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

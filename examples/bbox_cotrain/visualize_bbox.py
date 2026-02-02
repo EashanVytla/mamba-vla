@@ -12,7 +12,7 @@ from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, MISSING, OmegaConf
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-from vla_scratch.policies.config import PolicyConfig, create_policy
+from vla_scratch.policies.config import PolicyConfig
 from vla_scratch.datasets.config import DataConfig
 from vla_scratch.helpers.data import create_dataset
 from vla_scratch.utils.checkpoint import (
@@ -88,7 +88,7 @@ def main(cfg: DictConfig) -> None:
                 args.policy.state_dim = state_dim
     print("Initializing model...")
     with torch.device(device):
-        model = create_policy(args.policy)
+        model = args.policy.instantiate()
     print("Model initialized.")
 
     # Resolve checkpoint path (supports file or directory)
@@ -461,7 +461,7 @@ def parse_bbox_json(bbox_json: str) -> List[Dict]:
             return []
         return bboxes
     except json.JSONDecodeError:
-        print(f"Warning: Failed to parse bbox JSON")
+        print("Warning: Failed to parse bbox JSON")
         print(f"  Raw output: {bbox_json[:200]}...")
         print(f"  Cleaned: {bbox_json_clean[:200]}...")
         return []
@@ -496,10 +496,10 @@ def visualize_bbox(
         font = ImageFont.truetype(
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size
         )
-    except:
+    except Exception:
         try:
             font = ImageFont.load_default()
-        except:
+        except Exception:
             font = None
 
     # Get image dimensions

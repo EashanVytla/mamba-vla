@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib
 from copy import copy
-from typing import List, Optional, Tuple, TYPE_CHECKING, Dict
+from typing import List, Optional, Tuple, TYPE_CHECKING, Dict, cast
 
 import einops
 import torch
@@ -13,6 +13,7 @@ from vla_scratch.policies.utils.training import (
 )
 from vla_scratch.policies.modules.vlm_bridge.base import (
     VLMBridge,
+    VLMCache,
     VLMOutputs,
     TARGET_IGNORE_ID,
 )
@@ -88,12 +89,14 @@ class Qwen3VLBridge(VLMBridge):
         self,
         observation: "Observation",
         *,
+        cache: Optional[VLMCache] = None,
+        actions: Optional[torch.Tensor] = None,
         extra_embs: Optional[torch.Tensor] = None,
         extra_pad_masks: Optional[torch.Tensor] = None,
         extra_att_masks: Optional[torch.Tensor] = None,
         zero_pos_id_for_extra: bool = False,
         extra_attention_mask: bool = False,
-    ) -> Tuple[torch.Tensor, VLMOutputs, Dict]:
+    ) -> Tuple[torch.Tensor, VLMOutputs, Optional[VLMCache], Dict]:
         device = observation.device
         bsz = observation.shape[0]
         REPLACED = is_qwen3vl_forward_replaced()
@@ -175,11 +178,13 @@ class Qwen3VLBridge(VLMBridge):
                 extra_pos_3d.zero_()
             position_ids = torch.cat([position_ids, extra_pos_3d], dim=-1)
 
-            extra_visual = torch.zeros(
-                (bsz, extra_len), dtype=image_mask.dtype, device=device
-            )
-            image_mask = torch.cat([image_mask, extra_visual], dim=1)
-            torch.cuda.nvtx.range_pop()
+        extra_visual = torch.zeros(
+            (bsz, extra_len), dtype=image_mask.dtype, device=device
+        )
+        image_mask = torch.cat(
+            [cast(torch.Tensor, image_mask), extra_visual], dim=1
+        )
+        torch.cuda.nvtx.range_pop()
 
         embs = torch.cat(embs, dim=1)
         prefix_pad_masks = torch.cat(pad_masks, dim=1)
@@ -298,4 +303,5 @@ class Qwen3VLBridge(VLMBridge):
             "loss/ce_loss": ce_loss.detach(),
             "loss/accuracy": accuracy.detach(),
         }
-        return ce_loss, vlm_outputs, log_dict
+        # Transformer-based VLMs don't use temporal state caching
+        return ce_loss, vlm_outputs, None, log_dict

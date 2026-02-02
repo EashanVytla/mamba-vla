@@ -12,6 +12,7 @@ from vla_scratch.policies.utils.training import (
 )
 from vla_scratch.policies.modules.vlm_bridge.base import (
     VLMBridge,
+    VLMCache,
     VLMOutputs,
     TARGET_IGNORE_ID,
 )
@@ -82,12 +83,14 @@ class PaligemmaBridge(VLMBridge):
         self,
         observation: "Observation",
         *,
+        cache: Optional[VLMCache] = None,
+        actions: Optional[torch.Tensor] = None,
         extra_embs: Optional[torch.Tensor] = None,
         extra_pad_masks: Optional[torch.Tensor] = None,
         extra_att_masks: Optional[torch.Tensor] = None,
         zero_pos_id_for_extra: bool = False,
         extra_attention_mask: bool = False,
-    ) -> Tuple[torch.Tensor, VLMOutputs, Dict]:
+    ) -> Tuple[torch.Tensor, VLMOutputs, Optional[VLMCache], Dict]:
         policy_td: "PaligemmaPolicyInput" = observation.policy_input
         if not isinstance(policy_td, PaligemmaPolicyInput):
             raise TypeError(
@@ -113,7 +116,7 @@ class PaligemmaBridge(VLMBridge):
             self, lm.embed_tokens, llm_input_ids
         )
 
-        bsz, n_cam = pixel_values.shape[0], pixel_values.shape[1]
+        bsz = pixel_values.shape[0]
         images_flat = einops.rearrange(pixel_values, "b n c h w -> (b n) c h w")
         image_features = apply_checkpoint_when_training(
             self, self.causal_model.model.get_image_features, images_flat
@@ -229,4 +232,5 @@ class PaligemmaBridge(VLMBridge):
             "loss/ce_loss": ce_loss.detach(),
             "loss/accuracy": accuracy.detach(),
         }
-        return ce_loss, vlm_outputs, log_dict
+        # Transformer-based VLMs don't use temporal state caching
+        return ce_loss, vlm_outputs, None, log_dict
