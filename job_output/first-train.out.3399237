@@ -1,0 +1,9 @@
+
+Inactive Modules:
+  1) mvapich/3.0
+
+
+Activating Modules:
+  1) mvapich/3.0
+
+[2026-01-29T10:12:03.219] error: *** JOB 3399237 ON a0255 CANCELLED AT 2026-01-29T10:12:03 DUE to SIGNAL Terminated ***

@@ -1,0 +1,85 @@
+/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'repr' attribute with value False was provided to the `Field()` function, which has no effect in the context it was used. 'repr' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'frozen' attribute with value True was provided to the `Field()` function, which has no effect in the context it was used. 'frozen' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+__      __ _                          _____   _____  _____             _______   _____  _    _ 
+\ \    / /| |         /\             / ____| / ____||  __ \     /\    |__   __| / ____|| |  | |
+ \ \  / / | |        /  \    ______ | (___  | |     | |__) |   /  \      | |   | |     | |__| |
+  \ \/ /  | |       / /\ \  |______| \___ \ | |     |  _  /   / /\ \     | |   | |     |  __  |
+   \  /   | |____  / ____ \          ____) || |____ | | \ \  / ____ \    | |   | |____ | |  | |
+    \/    |______|/_/    \_\        |_____/  \_____||_|  \_\/_/    \_\   |_|    \_____||_|  |_|
+                                                                                               
+                                                                                               
+
+ World size: 1
+Device mesh: None
+/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/utils/data/dataloader.py:626: UserWarning: This DataLoader will create 4 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
+  warnings.warn(
+`torch_dtype` is deprecated! Use `dtype` instead!
+The fast path is not available because one of `(selective_state_update, selective_scan_fn, causal_conv1d_fn, causal_conv1d_update, mamba_inner_fn)` is None. Falling back to the sequential implementation of Mamba, as use_mambapy is set to False. To install follow https://github.com/state-spaces/mamba/#installation for mamba-ssm and install the kernels library using `pip install kernels` or https://github.com/Dao-AILab/causal-conv1d for causal-conv1d. For the mamba.py backend, follow https://github.com/alxndrTL/mamba.py.
+Loading checkpoint shards:   0%|          | 0/3 [00:00<?, ?it/s]Loading checkpoint shards:  33%|███▎      | 1/3 [01:05<02:10, 65.49s/it]Loading checkpoint shards:  67%|██████▋   | 2/3 [02:04<01:01, 61.97s/it]Loading checkpoint shards: 100%|██████████| 3/3 [02:08<00:00, 35.26s/it]Loading checkpoint shards: 100%|██████████| 3/3 [02:08<00:00, 42.83s/it]
+VLM model initialized in 129.68 seconds: MambaForCausalLM
+Action expert initialized in 0.16 seconds.
+[Rank 0] 🔥 Warmup pass...
+/users/PAS2152/eashanvytla1/mamba-vla/vla_scratch/policies/modules/vlm_bridge/mamba/bridge.py:285: UserWarning: std(): degrees of freedom is <= 0. Correction should be strictly less than the reduction factor (input numel divided by output numel). (Triggered internally at /pytorch/aten/src/ATen/native/ReduceOps.cpp:1839.)
+  "padding_ratio/std": padding_ratio.std(),
+icc: remark #10441: The Intel(R) C++ Compiler Classic (ICC) is deprecated and will be removed from product release in the second half of 2023. The Intel(R) oneAPI DPC++/C++ Compiler (ICX) is the recommended compiler moving forward. Please transition to use this compiler. Use '-diag-disable=10441' to disable this message.
+icc: command line warning #10148: option '-Wno-psabi' not supported
+icc: remark #10441: The Intel(R) C++ Compiler Classic (ICC) is deprecated and will be removed from product release in the second half of 2023. The Intel(R) oneAPI DPC++/C++ Compiler (ICX) is the recommended compiler moving forward. Please transition to use this compiler. Use '-diag-disable=10441' to disable this message.
+icc: command line warning #10148: option '-Wno-psabi' not supported
+icc: remark #10441: The Intel(R) C++ Compiler Classic (ICC) is deprecated and will be removed from product release in the second half of 2023. The Intel(R) oneAPI DPC++/C++ Compiler (ICX) is the recommended compiler moving forward. Please transition to use this compiler. Use '-diag-disable=10441' to disable this message.
+icc: command line warning #10148: option '-Wno-psabi' not supported
+icc: remark #10441: The Intel(R) C++ Compiler Classic (ICC) is deprecated and will be removed from product release in the second half of 2023. The Intel(R) oneAPI DPC++/C++ Compiler (ICX) is the recommended compiler moving forward. Please transition to use this compiler. Use '-diag-disable=10441' to disable this message.
+icc: command line warning #10148: option '-Wno-psabi' not supported
+icc: remark #10441: The Intel(R) C++ Compiler Classic (ICC) is deprecated and will be removed from product release in the second half of 2023. The Intel(R) oneAPI DPC++/C++ Compiler (ICX) is the recommended compiler moving forward. Please transition to use this compiler. Use '-diag-disable=10441' to disable this message.
+icc: command line warning #10148: option '-Wno-psabi' not supported
+icc: remark #10441: The Intel(R) C++ Compiler Classic (ICC) is deprecated and will be removed from product release in the second half of 2023. The Intel(R) oneAPI DPC++/C++ Compiler (ICX) is the recommended compiler moving forward. Please transition to use this compiler. Use '-diag-disable=10441' to disable this message.
+icc: command line warning #10148: option '-Wno-psabi' not supported
+icc: remark #10441: The Intel(R) C++ Compiler Classic (ICC) is deprecated and will be removed from product release in the second half of 2023. The Intel(R) oneAPI DPC++/C++ Compiler (ICX) is the recommended compiler moving forward. Please transition to use this compiler. Use '-diag-disable=10441' to disable this message.
+icc: command line warning #10148: option '-Wno-psabi' not supported
+[Rank 0] Tensor sizes (MB): params[local=9321.14, global=9321.14], buffers[local=0.00, global=0.00], grads[local=0.00, global=0.00], optim_state[local=0.00] | Total[local=9321.14, global=9321.14]; float dtypes: params[bfloat16=5451.14MB, float32=3870.00MB], buffers[float32=0.00MB], grads[none], optim_state[none]
+[Rank 0] Running memory profile...
+Error executing job with overrides: ['policy=pi-mamba', 'data=calvin', 'batch_size=8', 'lr.base=5e-5', '+lr.action_expert=5e-5', 'profile_memory=True', 'wandb.mode=online']
+Traceback (most recent call last):
+  File "/users/PAS2152/eashanvytla1/mamba-vla/scripts/train_policy.py", line 258, in main
+    model.unshard()
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/fsdp/_fully_shard/_fully_shard.py", line 295, in unshard
+    fsdp_param_group.lazy_init()
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/fsdp/_fully_shard/_fsdp_param_group.py", line 248, in lazy_init
+    self._init_mp_dtypes()
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/fsdp/_fully_shard/_fsdp_param_group.py", line 218, in _init_mp_dtypes
+    raise AssertionError(
+AssertionError: FSDP expects uniform original parameter dtype but got {torch.bfloat16, torch.float32}
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.
+[rank0]:[W128 12:04:33.944225060 ProcessGroupNCCL.cpp:1476] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+E0128 12:04:34.912000 2300963 torch/distributed/elastic/multiprocessing/api.py:874] failed (exitcode: 1) local_rank: 0 (pid: 2300971) of binary: /users/PAS2152/eashanvytla1/mamba-vla/.venv/bin/python3
+Traceback (most recent call last):
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/bin/torchrun", line 10, in <module>
+    sys.exit(main())
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 355, in wrapper
+    return f(*args, **kwargs)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/run.py", line 892, in main
+    run(args)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/run.py", line 883, in run
+    elastic_launch(
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 139, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 270, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+scripts/train_policy.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-01-28_12:04:34
+  host      : a0320.ten.osc.edu
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 2300971)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

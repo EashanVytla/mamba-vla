@@ -64,21 +64,37 @@ class MambaProcessor(TransformFn):
         )
 
     def compute(self, sample: "DataSample") -> "DataSample":
-        images = sample.observation.images  # [num_cameras, H, W, C]
+        images = sample.observation.images
+        # Mamba processor only supports temporal input: 6D (B, T, cameras, C, H, W) or 5D (T, cameras, C, H, W) per sample
+        if images.ndim == 5:
+            images = images.unsqueeze(0)
+        if images.ndim != 6:
+            raise ValueError(
+                f"MambaProcessor expects observation.images to be 5D (T, cameras, C, H, W) or 6D (B, T, cameras, C, H, W), "
+                f"got ndim={sample.observation.images.ndim}."
+            )
+        B, T, num_cams = images.shape[0], images.shape[1], images.shape[2]
 
-        # Process each camera image separately with SigLIP
-        processed_images = []
-        for img in images:
-            # img is [H, W, C], convert to numpy for processor
-            img_np = img.numpy() if isinstance(img, torch.Tensor) else img
-            processed = self.image_processor(
-                images=img_np,
-                return_tensors="pt",
-            )["pixel_values"]  # [1, C, H, W]
-            processed_images.append(processed.squeeze(0))  # [C, H, W]
-
-        # Stack all camera images: [num_cameras, C, H, W]
-        pixel_values = torch.stack(processed_images, dim=0)
+        # Flatten (B, T, num_cams, C, H, W) -> (B*T*num_cams, C, H, W)
+        flattened_images = images.view(-1, *images.shape[-3:])
+        # SigLIP processor accepts a list of images (numpy H,W,C or tensor); single batched call
+        if flattened_images.dim() == 4 and flattened_images.shape[1] == 3:
+            img_list = [
+                flattened_images[i].permute(1, 2, 0).cpu().numpy()
+                for i in range(flattened_images.shape[0])
+            ]
+        else:
+            img_list = [
+                flattened_images[i].cpu().numpy()
+                for i in range(flattened_images.shape[0])
+            ]
+        processed = self.image_processor(
+            images=img_list,
+            return_tensors="pt",
+        )["pixel_values"]
+        # (B*T*num_cams, C, H, W) -> (B, T, num_cams, C, H, W)
+        C, H, W = processed.shape[1], processed.shape[2], processed.shape[3]
+        pixel_values = processed.view(B, T, num_cams, C, H, W)
 
         # Build text prompt
         # Format: <task> <<<PROMPT_SEP>>> <generation_prompt> \nAssistant: <answer>
@@ -112,11 +128,17 @@ class MambaProcessor(TransformFn):
             input_ids, attention_mask
         )
 
+        # Expand text to batch size (B,) for temporal 6D input
+        input_ids = input_ids.squeeze(0).long().unsqueeze(0).expand(B, -1)
+        target_ids = target_ids.squeeze(0).long().unsqueeze(0).expand(B, -1)
+        attention_mask = attention_mask.squeeze(0).bool().unsqueeze(0).expand(B, -1)
+        obs_register_att_mask = obs_register_att_mask.squeeze(0).bool().unsqueeze(0).expand(B, -1)
+
         policy_td = MambaPolicyInput(
-            input_ids=input_ids.squeeze(0).long(),
-            target_ids=target_ids.squeeze(0).long(),
-            attention_mask=attention_mask.squeeze(0).bool(),
-            obs_register_att_mask=obs_register_att_mask.squeeze(0).bool(),
+            input_ids=input_ids,
+            target_ids=target_ids,
+            attention_mask=attention_mask,
+            obs_register_att_mask=obs_register_att_mask,
             pixel_values=pixel_values,
         )
         sample.observation.policy_input = policy_td

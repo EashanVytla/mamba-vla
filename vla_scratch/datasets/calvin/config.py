@@ -13,7 +13,7 @@ class CalvinConfig(DataConfig):
     _target_: str = "vla_scratch.datasets.calvin.dataset.CalvinDataset"
 
     # Path to CALVIN dataset root (e.g., /path/to/calvin/task_D_D)
-    data_root: str = "/local/scratch/vytla.4/calvin/dataset/calvin_debug_dataset/"
+    data_root: str = "/fs/scratch/PAS2138/vytlae/calvin/dataset/task_ABCD_D"
 
     # Which split to use: "training" or "validation"
     split: str = "training"

@@ -44,11 +44,13 @@ class CalvinDataset(Dataset):
         self.action_type = config.action_type
         self.action_horizon = config.action_horizon
         self.state_history = config.state_history
+        # Temporal window: number of consecutive frames per sample (1 = single frame)
+        self.temporal_window_size = getattr(config, "temporal_window_size", None) or 1
 
         # Load episode boundaries and language annotations
         self._load_episode_info()
 
-        # Build valid frame indices (accounting for action horizon and state history)
+        # Build valid frame indices (accounting for action horizon, state history, and temporal window)
         self._build_frame_indices()
 
     def _load_episode_info(self):
@@ -76,13 +78,18 @@ class CalvinDataset(Dataset):
 
         Only includes frames within annotated segments from auto_lang_ann.npy.
         Each index must have action_horizon frames after it within the segment.
+        For temporal training, the last frame in the window must also have action_horizon frames.
         State history is clipped to the segment start.
         """
         self.frame_indices: List[Tuple[int, int, str]] = []
 
         for (seg_start, seg_end), annotation in self.lang_annotations_map.items():
-            # Valid frames must have enough future actions within this segment
-            max_start_idx = seg_end - self.action_horizon + 1
+            # For temporal window, the last frame in the window needs action_horizon frames
+            # So the first valid start frame for a window of size T is:
+            # frame_idx + (T-1) + action_horizon <= seg_end
+            # => frame_idx <= seg_end - (T-1) - action_horizon + 1
+            window_size = self.temporal_window_size
+            max_start_idx = seg_end - (window_size - 1) - self.action_horizon + 1
 
             for frame_idx in range(seg_start, max_start_idx + 1):
                 # seg_start is used as boundary for state history clipping
@@ -94,6 +101,17 @@ class CalvinDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         frame_idx, ep_start, task = self.frame_indices[idx]
 
+        if self.temporal_window_size == 1:
+            # Single frame mode (original behavior)
+            return self._load_single_frame(frame_idx, ep_start, task)
+        else:
+            # Temporal window mode: return sequence of T consecutive frames
+            return self._load_temporal_window(frame_idx, ep_start, task)
+
+    def _load_single_frame(
+        self, frame_idx: int, ep_start: int, task: str
+    ) -> Dict[str, torch.Tensor]:
+        """Load a single frame with its state history and action chunk."""
         # Load images from all cameras
         images = self._load_images(frame_idx)
         img_mask = torch.ones((len(self.cameras), 1), dtype=torch.bool)
@@ -109,6 +127,48 @@ class CalvinDataset(Dataset):
             PROCESSED_IMAGE_MASK_KEY: img_mask,
             PROCESSED_STATE_KEY: state,
             PROCESSED_ACTION_KEY: actions,
+            TASK_KEY: task,
+        }
+
+    def _load_temporal_window(
+        self, start_frame_idx: int, ep_start: int, task: str
+    ) -> Dict[str, torch.Tensor]:
+        """Load a temporal window of T consecutive frames.
+
+        Returns stacked tensors with an additional temporal dimension:
+        - images: (T, num_cameras, H, W, C)
+        - img_mask: (T, num_cameras, 1)
+        - state: (T, state_history+1, state_dim)
+        - actions: (T, action_horizon, action_dim)
+        """
+        images_list = []
+        img_mask_list = []
+        state_list = []
+        actions_list = []
+
+        for t in range(self.temporal_window_size):
+            frame_idx = start_frame_idx + t
+
+            # Load images from all cameras
+            images = self._load_images(frame_idx)
+            img_mask = torch.ones((len(self.cameras), 1), dtype=torch.bool)
+
+            # Load robot state with history (clip to episode start)
+            state = self._load_state(frame_idx, ep_start)
+
+            # Load action chunk
+            actions = self._load_actions(frame_idx)
+
+            images_list.append(images)
+            img_mask_list.append(img_mask)
+            state_list.append(state)
+            actions_list.append(actions)
+
+        return {
+            PROCESSED_IMAGE_KEY: torch.stack(images_list, dim=0),  # (T, cameras, H, W, C)
+            PROCESSED_IMAGE_MASK_KEY: torch.stack(img_mask_list, dim=0),  # (T, cameras, 1)
+            PROCESSED_STATE_KEY: torch.stack(state_list, dim=0),  # (T, history+1, dim)
+            PROCESSED_ACTION_KEY: torch.stack(actions_list, dim=0),  # (T, horizon, dim)
             TASK_KEY: task,
         }
 

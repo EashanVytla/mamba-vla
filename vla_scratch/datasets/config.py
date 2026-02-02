@@ -14,6 +14,8 @@ class DataConfig:
     action_horizon: Optional[int] = None
     state_history: Optional[int] = None
     video_backend: Optional[str] = None
+    # Temporal training: number of consecutive frames per sample (None = inherit from policy)
+    temporal_window_size: Optional[int] = None
     # Structured transform lists
     input_transforms: List[Any] = field(default_factory=list)
     output_transforms: List[Any] = field(default_factory=list)

@@ -10,7 +10,6 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
     return torch.cat((-x2, x1), dim=-1)
 
 
-@torch.compile
 def apply_rotary_pos_emb(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -26,7 +25,6 @@ def apply_rotary_pos_emb(
     return q_embed, k_embed
 
 
-@torch.compile
 def create_sinusoidal_pos_embedding(
     time: at.Float[torch.Tensor, " b"],  # noqa: F722
     dimension: int,
@@ -51,7 +49,6 @@ def create_sinusoidal_pos_embedding(
     return torch.cat([torch.sin(sin_input), torch.cos(sin_input)], dim=1)
 
 
-@torch.compile
 def make_att_2d_masks(
     pad_masks: at.Bool[torch.Tensor, " b n"],  # noqa: F722
     att_masks: at.Bool[torch.Tensor, " b n"],  # noqa: F722

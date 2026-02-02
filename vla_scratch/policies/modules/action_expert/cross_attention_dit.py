@@ -49,7 +49,6 @@ class LazyRMSNorm(LazyModuleMixin, torch.nn.Module):
         return torch.rms_norm(x, self.normalized_shape, eps=self.eps)
 
 
-@torch.compile
 def modulate(
     x: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor
 ) -> torch.Tensor:
@@ -71,7 +70,6 @@ class AdaptiveModulation(nn.Module):
         return shift, scale, gate
 
 
-@torch.compile
 def gated_activation(
     x: torch.Tensor,
     y: torch.Tensor,

@@ -1,0 +1,41 @@
+/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'repr' attribute with value False was provided to the `Field()` function, which has no effect in the context it was used. 'repr' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/pydantic/_internal/_generate_schema.py:2249: UnsupportedFieldAttributeWarning: The 'frozen' attribute with value True was provided to the `Field()` function, which has no effect in the context it was used. 'frozen' is field-specific metadata, and can only be attached to a model field using `Annotated` metadata or by assignment. This may have happened because an `Annotated` type alias using the `type` statement was used, or if the `Field()` function was attached to a single member of a union type.
+  warnings.warn(
+Could not override 'profile_memory'.
+To append to your config use +profile_memory=True
+Key 'profile_memory' not in 'TrainConfig'
+    full_key: profile_memory
+    object_type=TrainConfig
+
+Set the environment variable HYDRA_FULL_ERROR=1 for a complete stack trace.
+E0127 17:57:23.022000 1903914 torch/distributed/elastic/multiprocessing/api.py:874] failed (exitcode: 1) local_rank: 0 (pid: 1904020) of binary: /users/PAS2152/eashanvytla1/mamba-vla/.venv/bin/python3
+Traceback (most recent call last):
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/bin/torchrun", line 10, in <module>
+    sys.exit(main())
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 355, in wrapper
+    return f(*args, **kwargs)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/run.py", line 892, in main
+    run(args)
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/run.py", line 883, in run
+    elastic_launch(
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 139, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+  File "/users/PAS2152/eashanvytla1/mamba-vla/.venv/lib/python3.10/site-packages/torch/distributed/launcher/api.py", line 270, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+scripts/train_policy.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-01-27_17:57:23
+  host      : a0018.ten.osc.edu
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 1904020)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

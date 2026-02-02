@@ -45,6 +45,10 @@ class PiConfig(PolicyConfig):
     detach_encoder_output: bool = False
     ce_loss_weight: float = 0.1
 
+    # temporal training (Mamba-only: train with temporal state propagation)
+    use_temporal_training: bool = False  # Enable temporal window training
+    temporal_window_size: int = 8  # Number of consecutive frames per training sample
+
     # freezing (Mamba-only: freeze LLM backbone while training vision encoder)
     freeze_llm_backbone: bool = False
 
@@ -128,8 +132,10 @@ pi_smolvlm_config = PiConfig(
 
 pi_mamba_config = PiConfig(
     _target_="vla_scratch.policies.pi.policy.PiPolicy",
-    state_history=1,
+    use_temporal_training=True,
+    temporal_window_size=64,
     action_horizon=10,
+    state_history=1,
     model_id="state-spaces/mamba-2.8b-hf",
     vlm_type="MambaForCausalLM",
     vision_encoder_id="google/siglip-base-patch16-224",

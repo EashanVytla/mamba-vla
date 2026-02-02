@@ -1,0 +1,4 @@
+/var/spool/slurmd/job3379750/slurm_script: line 12: cd: mamba-vla: No such file or directory
+Using CPython 3.10.18
+Creating virtual environment at: .venv
+[2026-01-27T17:45:51.802] error: *** JOB 3379750 ON a0018 CANCELLED AT 2026-01-27T17:45:51 DUE to SIGNAL Terminated ***

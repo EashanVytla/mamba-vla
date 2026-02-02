@@ -200,15 +200,15 @@ def main(cfg: DictConfig) -> None:
     loss.backward()
 
     policy.initialize_weights()
-    if train_cfg.low_mem:
-        policy = policy.bfloat16()
+    # Always convert to bfloat16 for uniform dtype (required by FSDP)
+    policy = policy.bfloat16()
 
     if train_cfg.use_ddp:
         model: "DDP" = DDP(policy, device_ids=[local_rank])
     else:
         model: "FSDPModule" = policy.apply_fsdp(
             param_type=torch.bfloat16,
-            output_dtype=torch.float32,
+            output_dtype=torch.bfloat16,
             reduce_type=torch.bfloat16 if train_cfg.low_mem else torch.float32,
             mesh=mesh,
         )
@@ -346,6 +346,8 @@ def main(cfg: DictConfig) -> None:
 
     print_with_rank(emoji.emojize(":rocket: Starting training..."))
     for epoch in range(train_cfg.epochs):
+        epoch_start_time = time.perf_counter()
+
         data_loader_iters = {
             name: next(epoch_iterator)
             for name, epoch_iterator in epoch_iterators.items()
@@ -500,6 +502,19 @@ def main(cfg: DictConfig) -> None:
         #     if i == 36:
         #         break
         # break
+
+        # Epoch timing telemetry
+        epoch_end_time = time.perf_counter()
+        epoch_duration = epoch_end_time - epoch_start_time
+        epoch_duration_min = epoch_duration / 60.0
+        if local_rank == 0:
+            print(f"Epoch {epoch + 1}/{train_cfg.epochs} completed in {epoch_duration_min:.2f} min ({epoch_duration:.1f}s)")
+        if global_rank == 0:
+            run.log({
+                "epoch": epoch + 1,
+                "perf/epoch_duration_sec": epoch_duration,
+                "perf/epoch_duration_min": epoch_duration_min,
+            })
 
         if (epoch + 1) % train_cfg.save_interval == 0 or (
             epoch + 1
