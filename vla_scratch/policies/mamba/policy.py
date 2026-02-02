@@ -228,6 +228,26 @@ class MambaPolicy(BasePolicy):
             batch_size=[bsz],
         )
 
+    def construct_suffix_input_batched(
+        self, vlm_outputs: "MambaVLMOutputs", B: int, T: int
+    ) -> SuffixInput:
+        """Build SuffixInput for all timesteps t=0..T-1 in one batch (B*T, ...)."""
+        if vlm_outputs.proprio_t_last_indices is None:
+            raise ValueError(
+                "MambaVLMOutputs must have proprio_t_last_indices for MambaPolicy."
+            )
+        indices = vlm_outputs.proprio_t_last_indices
+        action_expert_layers = self.config.action_expert_cfg.num_hidden_layers
+        h = vlm_outputs.hidden_state_list[:, -action_expert_layers:, indices, :]
+        h = h.permute(0, 2, 1, 3).reshape(B * T, action_expert_layers, 1, -1)
+        device = h.device
+        prefix_pad_masks = torch.ones(B * T, 1, dtype=torch.bool, device=device)
+        return SuffixInput(
+            prefix_pad_masks=prefix_pad_masks,
+            hidden_state_list=h,
+            batch_size=[B * T],
+        )
+
     def predict_suffix(
         self,
         state: at.Float[torch.Tensor, " batch horizon dim"],  # noqa: F722
@@ -258,13 +278,12 @@ class MambaPolicy(BasePolicy):
             prefix_offsets + torch.cumsum(suffix_pad_masks, dim=1) - 1
         )
 
-        encoder_hidden_states = suffix_input.hidden_state_list.unbind(dim=1)
         _, suffix_out, log_dict = self.action_expert.forward(
             inputs_embeds=suffix_embs,
             position_ids=position_ids,
             adarms_cond=time_emb,
             attention_mask=full_att_mask,
-            encoder_hidden_states=encoder_hidden_states,
+            encoder_hidden_states=suffix_input.hidden_state_list,
         )
 
         suffix_out = suffix_out[:, -self.config.action_horizon :, :]
@@ -274,11 +293,13 @@ class MambaPolicy(BasePolicy):
         self,
         data_sample: "DataSample",
     ) -> Tuple[torch.Tensor, Dict]:
-        """Compute loss (Option B): predict action at every timestep t, average over T."""
+        """Compute loss (Option B): predict action at every timestep t, average over T (vectorized)."""
         observation = data_sample.observation
-        actions_full = data_sample.action_chunk.actions  # (B, T, action_horizon, action_dim)
-        T = observation.policy_input.pixel_values.shape[1]
-        actions_bridge = actions_full[:, :-1]  # (B, T-1, action_horizon, action_dim)
+        actions_full = data_sample.action_chunk.actions
+        pixel_values = observation.policy_input.pixel_values
+        B, T = pixel_values.size(0), pixel_values.size(1)
+        num_noise = self.config.num_noise_per_sample
+        actions_bridge = actions_full[:, :-1]
 
         torch.cuda.nvtx.range_push("Model Encode Prefix")
         ce_loss, vlm_outputs, log_dict_prefix = self.encode_prefix(
@@ -293,65 +314,57 @@ class MambaPolicy(BasePolicy):
 
         state_full = observation.state
         if state_full.ndim == 3:
-            state_full = state_full.unsqueeze(1)  # (B, 1, state_history, state_dim)
+            state_full = state_full.unsqueeze(1)
 
-        flow_mse_list = []
-        log_dict_suffix = {}
-        for t in range(T):
-            torch.cuda.nvtx.range_push("Construct Suffix Input")
-            suffix_input_t = self.construct_suffix_input_from_t(
-                vlm_outputs, t
-            )
-            if self.config.detach_encoder_output:
-                suffix_input_t = suffix_input_t.detach()
-            torch.cuda.nvtx.range_pop()
+        torch.cuda.nvtx.range_push("Construct Suffix Input Batched")
+        suffix_input_bt = self.construct_suffix_input_batched(vlm_outputs, B, T)
+        if self.config.detach_encoder_output:
+            suffix_input_bt = suffix_input_bt.detach()
+        torch.cuda.nvtx.range_pop()
 
-            state_t = state_full[:, t]  # (B, state_history, state_dim)
-            action_t = actions_full[:, t]  # (B, action_horizon, action_dim)
+        state_flat = state_full.reshape(B * T, *state_full.size()[2:])
+        actions_flat = actions_full.reshape(B * T, *actions_full.size()[2:])
 
-            torch.cuda.nvtx.range_push("Expand Data Sample")
-            suffix_input_t = repeat_batch(
-                suffix_input_t, self.config.num_noise_per_sample
-            )
-            state_t_rep = repeat_batch(
-                state_t, self.config.num_noise_per_sample
-            )
-            action_t_rep = repeat_batch(
-                action_t, self.config.num_noise_per_sample
-            )
-            torch.cuda.nvtx.range_pop()
+        torch.cuda.nvtx.range_push("Expand Data Sample")
+        suffix_input_rep = SuffixInput(
+            prefix_pad_masks=repeat_batch(suffix_input_bt.prefix_pad_masks, num_noise),
+            hidden_state_list=repeat_batch(suffix_input_bt.hidden_state_list, num_noise),
+            batch_size=[B * T * num_noise],
+        )
+        state_rep = repeat_batch(state_flat, num_noise)
+        action_rep = repeat_batch(actions_flat, num_noise)
+        torch.cuda.nvtx.range_pop()
 
-            torch.cuda.nvtx.range_push("Apply Noise")
-            selected_noise = sample_noise(
-                action_t_rep.shape,
-                action_t_rep.device,
-                action_t_rep.dtype,
-            )
-            u_t = selected_noise - action_t_rep
-            timestep = sample_clamped_time(
-                self.time_dist, (action_t_rep.shape[0],)
-            )
-            noisy_actions_t = (
-                action_t_rep + timestep[:, None, None] * u_t
-            )
-            torch.cuda.nvtx.range_pop()
+        batch_rep = B * T * num_noise
+        action_horizon = self.config.action_horizon
+        action_dim = self.config.action_dim
+        device = action_rep.device
+        dtype = action_rep.dtype
 
-            torch.cuda.nvtx.range_push("Model Predict Suffix")
-            _, v_t, _ = self.predict_suffix(
-                state=state_t_rep,
-                suffix_input=suffix_input_t,
-                noisy_actions=noisy_actions_t,
-                time=timestep,
-            )
-            torch.cuda.nvtx.range_pop()
+        torch.cuda.nvtx.range_push("Apply Noise")
+        selected_noise = sample_noise(
+            (batch_rep, action_horizon, action_dim),
+            device,
+            dtype,
+        )
+        u = selected_noise - action_rep
+        timestep = sample_clamped_time(self.time_dist, (batch_rep,))
+        noisy_actions = action_rep + timestep[:, None, None] * u
+        torch.cuda.nvtx.range_pop()
 
-            flow_mse_t = torch.nn.functional.mse_loss(
-                u_t.to(v_t.dtype), v_t, reduction="none"
-            ).mean()
-            flow_mse_list.append(flow_mse_t)
+        torch.cuda.nvtx.range_push("Model Predict Suffix")
+        _, v, _ = self.predict_suffix(
+            state=state_rep,
+            suffix_input=suffix_input_rep,
+            noisy_actions=noisy_actions,
+            time=timestep,
+        )
+        torch.cuda.nvtx.range_pop()
 
-        flow_mse = torch.stack(flow_mse_list).mean()
-        log_dict_suffix["loss/flow_mse"] = flow_mse.detach()
+        flow_mse = torch.nn.functional.mse_loss(
+            u.to(v.dtype), v, reduction="none"
+        ).mean()
+        log_dict_suffix = {"loss/flow_mse": flow_mse.detach()}
 
         loss = flow_mse + self.config.ce_loss_weight * ce_loss
         log_dict = {**log_dict_prefix, **log_dict_suffix}

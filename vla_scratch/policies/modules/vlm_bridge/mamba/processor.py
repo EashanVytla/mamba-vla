@@ -1,5 +1,5 @@
 import importlib
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional, Tuple, TYPE_CHECKING
 
 import torch
 from tensordict import TensorClass
@@ -77,17 +77,14 @@ class MambaProcessor(TransformFn):
 
         # Flatten (B, T, num_cams, C, H, W) -> (B*T*num_cams, C, H, W)
         flattened_images = images.view(-1, *images.shape[-3:])
-        # SigLIP processor accepts a list of images (numpy H,W,C or tensor); single batched call
+        # Single sync: move whole batch to CPU and numpy once; then slice into list for processor
+        cpu_batch = flattened_images.cpu().numpy()
+        N = cpu_batch.shape[0]
         if flattened_images.dim() == 4 and flattened_images.shape[1] == 3:
-            img_list = [
-                flattened_images[i].permute(1, 2, 0).cpu().numpy()
-                for i in range(flattened_images.shape[0])
-            ]
+            # (N, C, H, W) -> list of (H, W, C) for SigLIP
+            img_list = [cpu_batch[i].transpose(1, 2, 0) for i in range(N)]
         else:
-            img_list = [
-                flattened_images[i].cpu().numpy()
-                for i in range(flattened_images.shape[0])
-            ]
+            img_list = [cpu_batch[i] for i in range(N)]
         processed = self.image_processor(
             images=img_list,
             return_tensors="pt",
@@ -149,18 +146,15 @@ class MambaProcessor(TransformFn):
         if input_ids.ndim == 1:
             input_ids = input_ids.unsqueeze(0)
 
-        bsz, seqlen = input_ids.shape
-        mask = torch.zeros((bsz, seqlen), dtype=torch.bool, device=input_ids.device)
-
-        for b in range(bsz):
-            ids_list = input_ids[b].tolist()
-            marker_start = self._find_subsequence(ids_list, self.assistant_marker_ids)
-            if marker_start is None:
-                continue
-            # Mask everything after the assistant marker
-            content_start = marker_start + len(self.assistant_marker_ids)
-            mask[b, content_start:] = True
-
+        bsz, seqlen = input_ids.shape[0], input_ids.shape[1]
+        start_indices, has_match = self._find_subsequence_batched(
+            input_ids, self.assistant_marker_ids
+        )
+        marker_len = len(self.assistant_marker_ids)
+        content_start = start_indices + marker_len
+        arange = torch.arange(seqlen, device=input_ids.device, dtype=torch.long)
+        arange = arange.unsqueeze(0).expand(bsz, -1)
+        mask = (arange >= content_start.unsqueeze(1)) & has_match.unsqueeze(1)
         return mask
 
     def _build_obs_register_att_mask(
@@ -172,31 +166,39 @@ class MambaProcessor(TransformFn):
         if attention_mask.ndim == 1:
             attention_mask = attention_mask.unsqueeze(0)
 
-        bsz, seqlen = input_ids.shape
-        mask = torch.zeros((bsz, seqlen), dtype=torch.bool, device=input_ids.device)
-
-        for b in range(bsz):
-            sep_start = self._find_subsequence(
-                input_ids[b].tolist(), self.prompt_sep_ids
-            )
-            if sep_start is None:
-                mask[b] = attention_mask[b].bool()
-            else:
-                mask[b, :sep_start] = attention_mask[b, :sep_start].bool()
-
+        bsz, seqlen = input_ids.shape[0], input_ids.shape[1]
+        sep_start_indices, has_sep = self._find_subsequence_batched(
+            input_ids, self.prompt_sep_ids
+        )
+        arange = torch.arange(seqlen, device=input_ids.device, dtype=torch.long)
+        arange = arange.unsqueeze(0).expand(bsz, -1)
+        att_bool = attention_mask.bool()
+        mask_before_sep = (arange < sep_start_indices.unsqueeze(1)) & att_bool
+        mask = torch.where(has_sep.unsqueeze(1), mask_before_sep, att_bool)
         return mask
 
     @staticmethod
-    def _find_subsequence(
-        sequence: list[int], subsequence: list[int]
-    ) -> Optional[int]:
-        """Find the starting index of a subsequence in a sequence."""
-        if isinstance(sequence, torch.Tensor):
-            sequence = sequence.tolist()
-        if not subsequence:
-            return None
-        max_start = len(sequence) - len(subsequence)
-        for i in range(max_start + 1):
-            if sequence[i : i + len(subsequence)] == subsequence:
-                return i
-        return None
+    def _find_subsequence_batched(
+        input_ids: torch.LongTensor, subsequence: List[int]
+    ) -> Tuple[torch.LongTensor, torch.BoolTensor]:
+        """Find start index of subsequence in each row; vectorized over batch.
+
+        Returns:
+            start_indices: (bsz,) start index per row (0 when no match).
+            has_match: (bsz,) True where subsequence was found.
+        """
+        bsz, seqlen = input_ids.shape[0], input_ids.shape[1]
+        L = len(subsequence)
+        if L == 0 or seqlen < L:
+            return (
+                torch.zeros(bsz, dtype=torch.long, device=input_ids.device),
+                torch.zeros(bsz, dtype=torch.bool, device=input_ids.device),
+            )
+        sub_t = torch.as_tensor(
+            subsequence, device=input_ids.device, dtype=input_ids.dtype
+        ).view(1, 1, L)
+        windows = input_ids.unfold(1, L, 1)
+        eq = (windows == sub_t).all(dim=2)
+        has_match = eq.any(dim=1)
+        first_idx = eq.long().argmax(dim=1)
+        return first_idx, has_match

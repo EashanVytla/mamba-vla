@@ -1,11 +1,12 @@
 # PyTorch & Performance Guidelines
-- **Vectorization is Mandatory:** Never use `for` loops over batch, time, or spatial dimensions. Always use `torch.cat`, `torch.stack`, or `view/reshape` to process data in bulk. If a loop seems unavoidable, justify it or ask if a vectorized alternative exists.
-- **Avoid CUDA Syncs:**
-    - Do NOT use `.item()`, `.tolist()`, or `.numpy()` inside the training loop unless absolutely necessary for logging.
-    - Do NOT inspect tensor shapes via `tensor.shape` or `len(tensor)` inside critical loops if it forces a sync (e.g., if the shape depends on a data-dependent operation). Trust static shapes where possible.
-    - Use `torch.compile` friendly patterns.
-- **Memory Efficiency:**
-    - Prefer in-place operations (`add_` instead of `add`) when possible.
-    - Use `torch.inference_mode()` instead of `torch.no_grad()` for inference.
-- **Mamba/SSM Specifics:**
-    - When preparing inputs for SSMs, prefer preparing contiguous blocks of memory (e.g. `[Batch, Time, Features]`) rather than lists of tensors.
+- **Prioritize Vectorization:** Structure data processing to use `torch.cat`, `torch.stack`, or `view/reshape` over batch, time, and spatial dimensions. If a loop is necessary for logic or memory constraints, provide a brief justification or consider `torch.vmap`.
+- **Minimize Host-Device Synchronization:**
+    - Defer moving data to CPU (via `.item()`, `.tolist()`, or `.numpy()`) until logging or checkpointing steps.
+    - Rely on static symbolic shapes where possible to maintain `torch.compile` compatibility. Avoid data-dependent shape checks inside critical paths.
+    - Write code that is friendly to graph capture and kernel fusion.
+- **Optimize Memory Usage:**
+    - utilize in-place operations (`add_`, `mul_`) to reduce allocator overhead.
+    - Default to `torch.inference_mode()` for validation and inference blocks.
+- **Mamba/SSM Optimization:**
+    - Construct inputs as contiguous memory blocks (e.g., `[Batch, Time, Features]`) to maximize scan kernel throughput.
+    - Pass full tensors rather than lists of tensors to custom layers to reduce interpreter overhead.
