@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Tuple, Callable, Optional, Dict
+from typing import List, Tuple, Callable, Optional, Dict, Union
 import einops
 
 import torch
@@ -402,7 +402,7 @@ class DiTModel(nn.Module):
         position_ids: PositionIds,
         adarms_cond: AdarmsCond,
         attention_mask: AttentionMask,
-        encoder_hidden_states: List[torch.Tensor],
+        encoder_hidden_states: Union[List[torch.Tensor], torch.Tensor],
     ) -> Tuple[torch.Tensor, HiddenState, Dict]:
         if inputs_embeds is None:
             raise ValueError("inputs_embeds must be provided.")
@@ -412,7 +412,11 @@ class DiTModel(nn.Module):
                 "attention_mask is expected to have shape (batch, 1, seq, seq_kv)."
             )
         assert attention_mask.shape[-2] == inputs_embeds.shape[1]
-        encoder_seq_len = encoder_hidden_states[0].shape[1]
+        stacked_encoder = isinstance(encoder_hidden_states, torch.Tensor) and encoder_hidden_states.dim() == 4
+        if stacked_encoder:
+            encoder_seq_len = encoder_hidden_states.shape[2]
+        else:
+            encoder_seq_len = encoder_hidden_states[0].shape[1]
         assert (
             attention_mask.shape[-1] == encoder_seq_len + inputs_embeds.shape[1]
         )
@@ -425,12 +429,18 @@ class DiTModel(nn.Module):
         for i, layer in enumerate(self.blocks):
             is_cross = (i % cross_every) == (cross_every - 1)
             if is_cross:
-                if self.config.only_attend_to_final_layer:
-                    encoder_hidden_this_layer = encoder_hidden_states[-1]
+                if stacked_encoder:
+                    if self.config.only_attend_to_final_layer:
+                        encoder_hidden_this_layer = encoder_hidden_states[:, -1, :, :]
+                    else:
+                        encoder_hidden_this_layer = encoder_hidden_states[:, i // cross_every, :, :]
                 else:
-                    encoder_hidden_this_layer = encoder_hidden_states[
-                        i // cross_every
-                    ]
+                    if self.config.only_attend_to_final_layer:
+                        encoder_hidden_this_layer = encoder_hidden_states[-1]
+                    else:
+                        encoder_hidden_this_layer = encoder_hidden_states[
+                            i // cross_every
+                        ]
                 attention_mask_this_layer = attention_mask
                 pos_emb_this_layer = None
             else:
