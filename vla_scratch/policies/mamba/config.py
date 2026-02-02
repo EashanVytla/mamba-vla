@@ -7,6 +7,7 @@ from vla_scratch.policies.config import PolicyConfig
 from vla_scratch.policies.modules.action_expert.cross_attention_dit import (
     DiTConfig,
 )
+from vla_scratch.policies.modules.action_expert.simple_mlp import MLPConfig
 
 
 @dataclass
@@ -25,6 +26,17 @@ class MambaPolicyConfig(PolicyConfig):
             num_hidden_layers=12,
             cross_attention_every=2,
             only_attend_to_final_layer=True,
+        )
+    )
+
+    mlp_action_expert_cfg: MLPConfig = field(
+        default_factory=lambda: MLPConfig(
+            hidden_size=1024,
+            num_hidden_layers=4,
+            intermediate_size=4096,
+            use_last_layer_only=True,
+            use_mean_pooling=True,
+            concat_state=True,
         )
     )
 

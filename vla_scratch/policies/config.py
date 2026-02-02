@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 from vla_scratch.utils.config import locate_class
 
 
@@ -12,6 +12,8 @@ class PolicyConfig:
     action_horizon: int
     state_dim: Optional[int] = None
     action_dim: Optional[int] = None
+
+    action_head_type: Literal["mlp", "flow_matching"] = "flow_matching"
 
     def instantiate(self) -> Any:
         policy_cls = locate_class(self._target_)

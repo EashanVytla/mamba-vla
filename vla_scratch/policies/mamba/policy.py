@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from typing import Any, Tuple, Optional, TYPE_CHECKING, Dict
 import einops
@@ -18,7 +19,7 @@ from torch.distributed.fsdp._fully_shard import (
 from tensordict import TensorClass
 
 from vla_scratch.policies.base import BasePolicy
-from vla_scratch.policies.modules.action_expert import DiTModel
+from vla_scratch.policies.modules.action_expert import DiTModel, MLPModel
 from vla_scratch.policies.modules.vlm_bridge import MambaBridge
 from vla_scratch.policies.utils.training import (
     apply_checkpoint_when_training,
@@ -66,6 +67,11 @@ class MambaPolicy(BasePolicy):
                 "MambaPolicyConfig.action_dim and state_dim must be set before "
                 "initializing MambaPolicy."
             )
+        if config.action_head_type not in ("mlp", "flow_matching"):
+            raise ValueError(
+                f"MambaPolicyConfig.action_head_type must be 'mlp' or 'flow_matching', "
+                f"got {config.action_head_type!r}."
+            )
 
         start_time = time.time()
         self.vlm_bridge = MambaBridge(
@@ -82,61 +88,74 @@ class MambaPolicy(BasePolicy):
             self.vlm_bridge.get_text_dims()
         )
 
-        action_expert_config = config.action_expert_cfg
         start_time = time.time()
-        self.action_expert = DiTModel(config=action_expert_config)
+        if config.action_head_type == "flow_matching":
+            action_expert_config = config.action_expert_cfg
+            self.action_expert = DiTModel(config=action_expert_config)
+            action_expert_width = action_expert_config.hidden_size
+            self.action_in_proj = nn.Linear(
+                config.action_dim, action_expert_width
+            )
+            self.action_out_proj = nn.Linear(
+                action_expert_width, config.action_dim
+            )
+            self.state_in_proj = nn.Linear(
+                config.state_dim, action_expert_width
+            )
+            self.time_mlp = nn.Sequential(
+                nn.Linear(action_expert_width, action_expert_width),
+                nn.SiLU(),
+                nn.Linear(action_expert_width, action_expert_width),
+                nn.SiLU(),
+            )
+            suffix_len = config.action_horizon + (
+                config.state_history if config.use_state else 0
+            )
+            self.suffix_len = suffix_len
+            suffix_pad_mask = torch.ones(suffix_len, dtype=torch.bool)
+            suffix_att_mask = torch.zeros(suffix_len, dtype=torch.bool)
+            suffix_att_mask[0] = 1
+            self.register_buffer(
+                "suffix_pad_mask", suffix_pad_mask, persistent=False
+            )
+            self.register_buffer(
+                "suffix_att_mask", suffix_att_mask, persistent=False
+            )
+            if config.suffix_add_pos_emb:
+                pos_emb_state = torch.zeros(
+                    config.state_history, action_expert_width
+                )
+                self.position_embedding_state = nn.Parameter(pos_emb_state)
+                pos_emb_action = torch.zeros(
+                    config.action_horizon, action_expert_width
+                )
+                self.position_embedding_action = nn.Parameter(pos_emb_action)
+            param_device = next(self.parameters()).device
+            self.time_dist = build_beta_time_dist(
+                config.time_dist_alpha,
+                config.time_dist_beta,
+                device=param_device,
+            )
+        else:
+            mlp_cfg = dataclasses.replace(
+                config.mlp_action_expert_cfg,
+                action_horizon=config.action_horizon,
+            )
+            self.action_expert = MLPModel(config=mlp_cfg)
+            self.suffix_len = 0
+            self.time_dist = None
         end_time = time.time()
         print(
             "Action expert initialized in {end_time - start_time:.2f} seconds."
         )
 
-        action_expert_width = action_expert_config.hidden_size
-        self.action_in_proj = nn.Linear(config.action_dim, action_expert_width)
-        self.action_out_proj = nn.Linear(action_expert_width, config.action_dim)
-        self.state_in_proj = nn.Linear(config.state_dim, action_expert_width)
-
-        self.time_mlp = nn.Sequential(
-            nn.Linear(action_expert_width, action_expert_width),
-            nn.SiLU(),
-            nn.Linear(action_expert_width, action_expert_width),
-            nn.SiLU(),
-        )
-
-        suffix_len = config.action_horizon + (
-            config.state_history if config.use_state else 0
-        )
-        self.suffix_len = suffix_len
-        suffix_pad_mask = torch.ones(suffix_len, dtype=torch.bool)
-        suffix_att_mask = torch.zeros(suffix_len, dtype=torch.bool)
-        suffix_att_mask[0] = 1
-        self.register_buffer(
-            "suffix_pad_mask", suffix_pad_mask, persistent=False
-        )
-        self.register_buffer(
-            "suffix_att_mask", suffix_att_mask, persistent=False
-        )
-
-        if config.suffix_add_pos_emb:
-            pos_emb_state = torch.zeros(
-                config.state_history, action_expert_width
-            )
-            self.position_embedding_state = nn.Parameter(pos_emb_state)
-            pos_emb_action = torch.zeros(
-                config.action_horizon, action_expert_width
-            )
-            self.position_embedding_action = nn.Parameter(pos_emb_action)
-
-        param_device = next(self.parameters()).device
-        self.time_dist = build_beta_time_dist(
-            config.time_dist_alpha,
-            config.time_dist_beta,
-            device=param_device,
-        )
-
         self._inference_cache = None
 
     def initialize_weights(self):
-        if self.config.suffix_add_pos_emb:
+        if (
+            self.config.action_head_type == "flow_matching"
+            and self.config.suffix_add_pos_emb
+        ):
             nn.init.normal_(
                 self.position_embedding_state,
                 mean=0.0,
@@ -255,39 +274,54 @@ class MambaPolicy(BasePolicy):
         noisy_actions: torch.Tensor,
         time: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor, Dict]:
-        """One denoising step for the action expert."""
-        prefix_pad_masks = suffix_input.prefix_pad_masks
-
-        suffix_embs, suffix_pad_masks, suffix_att_masks, time_emb = (
-            self._embed_suffix(state, noisy_actions, time)
-        )
-
-        suffix_att_2d_masks = make_att_2d_masks(
-            suffix_pad_masks, suffix_att_masks
-        )
-        prefix_pad_mask = einops.repeat(
-            prefix_pad_masks, "b p -> b s p", s=self.suffix_len
-        )
-        full_att_2d_mask = torch.cat(
-            [prefix_pad_mask, suffix_att_2d_masks], dim=2
-        )
-        full_att_mask = einops.rearrange(full_att_2d_mask, "b i j -> b 1 i j")
-
-        prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
-        position_ids = (
-            prefix_offsets + torch.cumsum(suffix_pad_masks, dim=1) - 1
-        )
-
-        _, suffix_out, log_dict = self.action_expert.forward(
-            inputs_embeds=suffix_embs,
-            position_ids=position_ids,
-            adarms_cond=time_emb,
-            attention_mask=full_att_mask,
-            encoder_hidden_states=suffix_input.hidden_state_list,
-        )
-
-        suffix_out = suffix_out[:, -self.config.action_horizon :, :]
-        return 0.0, self.action_out_proj(suffix_out), log_dict
+        """One denoising step (flow_matching) or direct action prediction (mlp)."""
+        if self.config.action_head_type == "flow_matching":
+            prefix_pad_masks = suffix_input.prefix_pad_masks
+            suffix_embs, suffix_pad_masks, suffix_att_masks, time_emb = (
+                self._embed_suffix(state, noisy_actions, time)
+            )
+            suffix_att_2d_masks = make_att_2d_masks(
+                suffix_pad_masks, suffix_att_masks
+            )
+            prefix_pad_mask = einops.repeat(
+                prefix_pad_masks, "b p -> b s p", s=self.suffix_len
+            )
+            full_att_2d_mask = torch.cat(
+                [prefix_pad_mask, suffix_att_2d_masks], dim=2
+            )
+            full_att_mask = einops.rearrange(
+                full_att_2d_mask, "b i j -> b 1 i j"
+            )
+            prefix_offsets = torch.sum(prefix_pad_masks, dim=-1)[:, None]
+            position_ids = (
+                prefix_offsets + torch.cumsum(suffix_pad_masks, dim=1) - 1
+            )
+            encoder_hidden_states = suffix_input.hidden_state_list.unbind(
+                dim=1
+            )
+            _, suffix_out, log_dict = self.action_expert.forward(
+                inputs_embeds=suffix_embs,
+                position_ids=position_ids,
+                adarms_cond=time_emb,
+                attention_mask=full_att_mask,
+                encoder_hidden_states=encoder_hidden_states,
+            )
+            suffix_out = suffix_out[:, -self.config.action_horizon :, :]
+            return 0.0, self.action_out_proj(suffix_out), log_dict
+        else:
+            encoder_hidden_states = suffix_input.hidden_state_list.unbind(
+                dim=1
+            )
+            prefix_pad_masks = suffix_input.prefix_pad_masks
+            if state is not None and state.dim() == 3:
+                state = state.reshape(state.size(0), -1)
+            _, actions, log_dict = self.action_expert.forward(
+                encoder_hidden_states=encoder_hidden_states,
+                prefix_pad_masks=prefix_pad_masks,
+                state=state if self.config.use_state else None,
+                action_dim=self.config.action_dim,
+            )
+            return 0.0, actions, log_dict
 
     def compute_loss(
         self,
@@ -298,7 +332,6 @@ class MambaPolicy(BasePolicy):
         actions_full = data_sample.action_chunk.actions
         pixel_values = observation.policy_input.pixel_values
         B, T = pixel_values.size(0), pixel_values.size(1)
-        num_noise = self.config.num_noise_per_sample
         actions_bridge = actions_full[:, :-1]
 
         torch.cuda.nvtx.range_push("Model Encode Prefix")
@@ -315,6 +348,7 @@ class MambaPolicy(BasePolicy):
         state_full = observation.state
         if state_full.ndim == 3:
             state_full = state_full.unsqueeze(1)
+        state_flat = state_full.reshape(B * T, *state_full.size()[2:])
 
         torch.cuda.nvtx.range_push("Construct Suffix Input Batched")
         suffix_input_bt = self.construct_suffix_input_batched(vlm_outputs, B, T)
@@ -322,51 +356,83 @@ class MambaPolicy(BasePolicy):
             suffix_input_bt = suffix_input_bt.detach()
         torch.cuda.nvtx.range_pop()
 
-        state_flat = state_full.reshape(B * T, *state_full.size()[2:])
-        actions_flat = actions_full.reshape(B * T, *actions_full.size()[2:])
+        if self.config.action_head_type == "flow_matching":
+            num_noise = self.config.num_noise_per_sample
+            actions_flat = actions_full.reshape(
+                B * T, *actions_full.size()[2:]
+            )
+            torch.cuda.nvtx.range_push("Expand Data Sample")
+            suffix_input_rep = SuffixInput(
+                prefix_pad_masks=repeat_batch(
+                    suffix_input_bt.prefix_pad_masks, num_noise
+                ),
+                hidden_state_list=repeat_batch(
+                    suffix_input_bt.hidden_state_list, num_noise
+                ),
+                batch_size=[B * T * num_noise],
+            )
+            state_rep = repeat_batch(state_flat, num_noise)
+            action_rep = repeat_batch(actions_flat, num_noise)
+            torch.cuda.nvtx.range_pop()
 
-        torch.cuda.nvtx.range_push("Expand Data Sample")
-        suffix_input_rep = SuffixInput(
-            prefix_pad_masks=repeat_batch(suffix_input_bt.prefix_pad_masks, num_noise),
-            hidden_state_list=repeat_batch(suffix_input_bt.hidden_state_list, num_noise),
-            batch_size=[B * T * num_noise],
-        )
-        state_rep = repeat_batch(state_flat, num_noise)
-        action_rep = repeat_batch(actions_flat, num_noise)
-        torch.cuda.nvtx.range_pop()
+            batch_rep = B * T * num_noise
+            action_horizon = self.config.action_horizon
+            action_dim = self.config.action_dim
+            device = action_rep.device
+            dtype = action_rep.dtype
 
-        batch_rep = B * T * num_noise
-        action_horizon = self.config.action_horizon
-        action_dim = self.config.action_dim
-        device = action_rep.device
-        dtype = action_rep.dtype
+            torch.cuda.nvtx.range_push("Apply Noise")
+            selected_noise = sample_noise(
+                (batch_rep, action_horizon, action_dim),
+                device,
+                dtype,
+            )
+            u = selected_noise - action_rep
+            timestep = sample_clamped_time(self.time_dist, (batch_rep,))
+            noisy_actions = action_rep + timestep[:, None, None] * u
+            torch.cuda.nvtx.range_pop()
 
-        torch.cuda.nvtx.range_push("Apply Noise")
-        selected_noise = sample_noise(
-            (batch_rep, action_horizon, action_dim),
-            device,
-            dtype,
-        )
-        u = selected_noise - action_rep
-        timestep = sample_clamped_time(self.time_dist, (batch_rep,))
-        noisy_actions = action_rep + timestep[:, None, None] * u
-        torch.cuda.nvtx.range_pop()
+            torch.cuda.nvtx.range_push("Model Predict Suffix")
+            _, v, _ = self.predict_suffix(
+                state=state_rep,
+                suffix_input=suffix_input_rep,
+                noisy_actions=noisy_actions,
+                time=timestep,
+            )
+            torch.cuda.nvtx.range_pop()
 
-        torch.cuda.nvtx.range_push("Model Predict Suffix")
-        _, v, _ = self.predict_suffix(
-            state=state_rep,
-            suffix_input=suffix_input_rep,
-            noisy_actions=noisy_actions,
-            time=timestep,
-        )
-        torch.cuda.nvtx.range_pop()
+            flow_mse = torch.nn.functional.mse_loss(
+                u.to(v.dtype), v, reduction="none"
+            ).mean()
+            log_dict_suffix = {"loss/flow_mse": flow_mse.detach()}
+            loss = flow_mse + self.config.ce_loss_weight * ce_loss
+        else:
+            device = state_flat.device
+            dtype = state_flat.dtype
+            action_horizon = self.config.action_horizon
+            action_dim = self.config.action_dim
+            dummy_noisy = torch.zeros(
+                B * T, action_horizon, action_dim,
+                device=device, dtype=dtype,
+            )
+            dummy_time = torch.zeros(B * T, device=device, dtype=dtype)
+            torch.cuda.nvtx.range_push("Model Predict Suffix")
+            _, pred_actions, log_dict_suffix = self.predict_suffix(
+                state=state_flat,
+                suffix_input=suffix_input_bt,
+                noisy_actions=dummy_noisy,
+                time=dummy_time,
+            )
+            torch.cuda.nvtx.range_pop()
+            target_actions = actions_full.reshape(
+                B * T, action_horizon, action_dim
+            )
+            action_mse = torch.nn.functional.mse_loss(
+                pred_actions, target_actions.to(pred_actions.dtype)
+            )
+            log_dict_suffix["loss/action_mse"] = action_mse.detach()
+            loss = action_mse + self.config.ce_loss_weight * ce_loss
 
-        flow_mse = torch.nn.functional.mse_loss(
-            u.to(v.dtype), v, reduction="none"
-        ).mean()
-        log_dict_suffix = {"loss/flow_mse": flow_mse.detach()}
-
-        loss = flow_mse + self.config.ce_loss_weight * ce_loss
         log_dict = {**log_dict_prefix, **log_dict_suffix}
         return loss, log_dict
 
@@ -395,13 +461,32 @@ class MambaPolicy(BasePolicy):
         bsize = state.shape[0]
         device = state.device
         dtype = state.dtype
+
+        if self.config.action_head_type == "mlp":
+            dummy_noisy = torch.zeros(
+                bsize,
+                self.config.action_horizon,
+                self.config.action_dim,
+                device=device,
+                dtype=dtype,
+            )
+            dummy_time = torch.zeros(bsize, device=device, dtype=dtype)
+            torch.cuda.nvtx.range_push("Predict Suffix in Sampling")
+            _, actions, _ = self.predict_suffix(
+                state,
+                suffix_input=suffix_input,
+                noisy_actions=dummy_noisy,
+                time=dummy_time,
+            )
+            torch.cuda.nvtx.range_pop()
+            return actions
+
         actions_shape = (
             bsize,
             self.config.action_horizon,
             self.config.action_dim,
         )
         noise = sample_noise(actions_shape, device, dtype)
-
         dt_float = 1.0 / num_steps
         time_float = 1.0
         dt = torch.tensor(dt_float, dtype=dtype, device=device)
