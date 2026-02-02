@@ -227,18 +227,13 @@ class MambaBridge(VLMBridge):
                 f"MambaBridge.encode expects policy_input.pixel_values to be 6D "
                 f"(batch, time, cameras, C, H, W), got ndim={pixel_values.ndim}"
             )
-        bsz, T, num_cams = (
-            pixel_values.shape[0],
-            pixel_values.shape[1],
-            pixel_values.shape[2],
-        )
+        bsz, T, num_cams = pixel_values.shape[0], pixel_values.shape[1], pixel_values.shape[2]
         device = input_ids.device
+        pv_trailing = pixel_values.shape[3], pixel_values.shape[4], pixel_values.shape[5]
 
         # Fold: (B, T, Cameras, C, H, W) -> (B*T*Cameras, C, H, W)
         torch.cuda.nvtx.range_push("encode_vision")
-        pixel_values_flat = pixel_values.view(
-            bsz * T * num_cams, *pixel_values.shape[3:]
-        )
+        pixel_values_flat = pixel_values.view(bsz * T * num_cams, *pv_trailing)
         vision_outputs = self.vision_encoder(pixel_values=pixel_values_flat)
         image_embeds = vision_outputs.last_hidden_state
         image_embeds = self.vision_projector(image_embeds)
@@ -303,10 +298,12 @@ class MambaBridge(VLMBridge):
         if has_text:
             final_parts.append(text_embeds)
             pad_parts.append(input_pad_masks)
+        body_seq_len = body_seq.shape[1]
+        tail_seq_len = tail_seq.shape[1]
         final_parts.append(body_seq)
-        pad_parts.append(torch.ones(bsz, body_seq.shape[1], dtype=torch.bool, device=device))
+        pad_parts.append(torch.ones(bsz, body_seq_len, dtype=torch.bool, device=device))
         final_parts.append(tail_seq)
-        pad_parts.append(torch.ones(bsz, tail_seq.shape[1], dtype=torch.bool, device=device))
+        pad_parts.append(torch.ones(bsz, tail_seq_len, dtype=torch.bool, device=device))
         merged_embeds = torch.cat(final_parts, dim=1)
         merged_pad_masks = torch.cat(pad_parts, dim=1)
 
@@ -329,10 +326,9 @@ class MambaBridge(VLMBridge):
         # Handle extra embeddings (observation registers)
         embs = [merged_embeds]
         pad_masks = [merged_pad_masks]
+        merged_seq_len = merged_embeds.shape[1]
         att_masks = [
-            torch.ones(
-                merged_embeds.shape[1], dtype=torch.bool, device=device
-            ),
+            torch.ones(merged_seq_len, dtype=torch.bool, device=device),
         ]
 
         extra_len = 0
